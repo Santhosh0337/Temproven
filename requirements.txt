@@ -3,6 +3,7 @@ falkordb==1.8.0
 
 # UI
 streamlit==1.66.0
+altair==6.3.0
 
 # Testing
 pytest==9.1.1

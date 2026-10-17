@@ -59,11 +59,22 @@ pytest tests/
 
 The Temproven UI (`temproven/app/streamlit_app.py`) provides an editorial, technical laboratory integrity dashboard structured across four core capability panels:
 
-1. **`01 / INCIDENT` — Incident Overview:**
-   - Incident metadata (ID, Type, Status badge, Instrument, UTC/IST timestamps).
-   - High-level summary metrics (events, actions, tasks, agent handoffs).
-   - Linear episodic event stepper reconstructed from `:FOLLOWS` graph chains.
-   - Associated review tasks with role-based assignment and escalation reasons.
+1. **`01 / INCIDENT` — Incident Overview & Interactive Event Timeline:**
+   - Incident metadata (ID, Type, Status badge, Instrument, UTC/IST recorded timestamps).
+   - Triggering evidence revision block separating `VALID TIME` (science) from `RECORDED TIME` (system as-of).
+   - Key figures strip (affected experiments, datasets, reports, tasks; `—` when uncomputed).
+   - **Interactive Point-Based Event Timeline (Primary Centerpiece):**
+     - One point per persisted event positioned strictly by sequence number (`seq`), never by timestamp.
+     - Distinct marks: Diamonds for significant events (incident open/close, evidence ingestion, actions, postconditions, decisions) and Circles for routine events (queries, handoffs).
+     - Hover tooltips: instant event inspection (sequence, category, event type, summary capped at 120 chars, actor, recorded time).
+     - Click-to-select: clicking any point selects it and immediately displays full details in the Event Inspection Panel directly beneath.
+     - Sequence semantics note: *“Line = recorded event sequence, not causation.”*
+     - Category filters: Multi-select filtering with live event counts; routine queries are hidden by default to prevent clutter, accompanied by an explicit subset banner (*“Showing N of M events; K hidden by filter...”*).
+     - Layout toggle: Seamless horizontal (default) or vertical layout switching.
+     - Keyboard & non-pointer navigation: `◀ Prev`, `Next ▶`, `Go to sequence`, and `Clear` controls.
+   - **Event Inspection Panel:** Full untruncated event summary, type, ID, actor, recorded timestamps (UTC primary, IST secondary), outcome, references, targets, and raw JSON payload.
+   - **Stage Summary (Collapsed Expander):** Secondary 7-canonical-stage Graphviz summary (default closed).
+   - **Full Audit Trail (Collapsed Expander):** Complete, markdown-safe chronological audit trail containing every persisted event in `seq` order (unfiltered).
 
 2. **`02 / IMPACT` — Downstream Impact Trace:**
    - Graphviz directed acyclic graph (DAG) visualizing propagation from instrument through experiments and datasets to published reports.

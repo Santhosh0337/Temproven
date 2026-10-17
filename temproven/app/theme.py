@@ -319,5 +319,27 @@ div[data-testid="stTable"], div[data-testid="stDataFrame"] {{
     border: 1px solid {BORDER_COLOR};
     border-radius: 3px;
 }}
+
+/* Timeline Inspector Panel */
+.inspector-panel {{
+    background-color: {CARD_BG};
+    border: 1px solid {BORDER_COLOR};
+    border-radius: 4px;
+    padding: 0.85rem 1rem;
+    margin-top: 0.6rem;
+    margin-bottom: 0.85rem;
+}}
+
+.inspector-summary {{
+    background-color: #0E1014;
+    border: 1px solid {BORDER_COLOR};
+    border-left: 3px solid #00D2B4;
+    padding: 0.65rem 0.85rem;
+    font-size: 0.82rem;
+    color: #F3F4F6;
+    border-radius: 2px;
+    margin: 0.5rem 0;
+    line-height: 1.45;
+}}
 </style>
 """

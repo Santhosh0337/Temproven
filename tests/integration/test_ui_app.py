@@ -126,28 +126,29 @@ def test_streamlit_journey_and_audit_trail_render_from_graph_data(monkeypatch):
         at.run(timeout=15)
         assert not at.exception
 
-        # Verify Journey Graph controls and legend
+        # Verify Timeline controls and legend
         assert len(at.toggle) >= 1
-        assert at.toggle[0].label == "Vertical layout"
+        assert any(t.label == "Vertical" for t in at.toggle)
 
-        # Verify Journey Graph caption
-        captions = [c.value for c in at.caption if "Solid borders = recorded stages" in c.value]
-        assert len(captions) >= 1, "Expected Journey Graph legend caption to render"
+        # Verify caption
+        captions = [c.value for c in at.caption if "Line = recorded event sequence" in c.value]
+        assert len(captions) >= 1, "Expected Timeline legend caption to render"
 
-        # Verify Stage Selection control exists and contains present stages
-        assert len(at.segmented_control) >= 1
-        stage_ctrl = at.segmented_control[0]
-        assert any("Evidence received" in opt for opt in stage_ctrl.options)
-        assert any("Quarantine" in opt for opt in stage_ctrl.options)
-        assert not any("Incident closure" in opt for opt in stage_ctrl.options)
+        # Verify category multiselect filter exists
+        assert len(at.multiselect) >= 1
+        ms = at.multiselect[0]
+        assert any("Evidence received" in opt for opt in ms.options)
 
-        # Verify Event dataframes rendered
-        assert len(at.dataframe) >= 1
+        # Verify navigation buttons exist
+        button_labels = [b.label for b in at.button]
+        assert "All" in button_labels
+        assert "Reset" in button_labels
+        assert "◀ Prev" in button_labels
+        assert "Next ▶" in button_labels
+        assert "Clear" in button_labels
 
-        # Test selecting another stage (index 1) and rerun
-        stage_ctrl.select(stage_ctrl.options[1])
-        at.run(timeout=15)
-        assert not at.exception
+        # Verify number input for Go to sequence exists
+        assert len(at.number_input) >= 1
 
         # Test selecting the empty incident
         select_box = at.sidebar.selectbox[0]
@@ -159,7 +160,7 @@ def test_streamlit_journey_and_audit_trail_render_from_graph_data(monkeypatch):
         assert not at.exception
 
         # Verify empty state renders safely
-        empty_mds = [m.value for m in at.info if "No episodic events recorded" in m.value]
+        empty_mds = [m.value for m in at.markdown if "No episodic events recorded" in m.value or "Select a point on the timeline" in m.value]
         assert len(empty_mds) >= 1, "Expected empty state message for incident with 0 events"
 
     finally:

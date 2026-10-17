@@ -24,6 +24,12 @@ from temproven.app.journey import (
     build_journey_dot,
     extract_payload,
 )
+from temproven.app.timeline import (
+    CATEGORY_LABELS,
+    build_timeline_chart,
+    build_timeline_points,
+    resolve_selected_seq,
+)
 from temproven.app.presenters import (
     build_lineage_dot,
     build_timeline_html,
@@ -302,154 +308,230 @@ def render_section_1_overview(
     """
     st.markdown(outcomes_html, unsafe_allow_html=True)
 
-    # 5. Incident Journey Graph (Pure domain computation, Graphviz DOT, layout toggle)
+    # 5. Interactive Point-Based Event Timeline (Primary Centerpiece)
     handoff_task_types = {
         h["id"]: h.get("task_type")
         for h in (recon.handoffs or [])
         if isinstance(h, dict) and h.get("id") and h.get("task_type")
     }
-    journey = build_journey(recon.events, handoff_task_types)
 
-    col_j_title, col_j_toggle = st.columns([3, 1])
-    with col_j_title:
+    filter_state_key = f"timeline_filter_{recon.incident_id}"
+    selected_seq_key = f"timeline_sel_{recon.incident_id}"
+    vert_state_key = f"timeline_vert_{recon.incident_id}"
+
+    # Default category filter: hide Routine queries by default if present
+    initial_active = [c for c in CATEGORY_LABELS if c != "Routine queries"]
+    if filter_state_key not in st.session_state:
+        st.session_state[filter_state_key] = initial_active
+
+    if selected_seq_key not in st.session_state:
+        st.session_state[selected_seq_key] = None
+
+    if vert_state_key not in st.session_state:
+        st.session_state[vert_state_key] = False
+
+    col_t_title, col_t_all, col_t_reset, col_t_toggle = st.columns([3.5, 1, 1, 1.5])
+    with col_t_title:
         st.markdown(
             '<div class="micro-label" style="margin-top: 0.6rem; letter-spacing: 0.08em;">'
-            'INCIDENT JOURNEY GRAPH (7 CANONICAL STAGES)'
+            'INTERACTIVE EVENT TIMELINE (SEQUENCE ORDER)'
             '</div>',
             unsafe_allow_html=True,
         )
-    with col_j_toggle:
-        is_vert = st.toggle("Vertical layout", value=False, key=f"tog_vert_{recon.incident_id}")
+    with col_t_all:
+        if st.button("All", key=f"btn_all_{recon.incident_id}", use_container_width=True):
+            st.session_state[filter_state_key] = list(CATEGORY_LABELS)
+            st.rerun()
+    with col_t_reset:
+        if st.button("Reset", key=f"btn_reset_{recon.incident_id}", use_container_width=True):
+            st.session_state[filter_state_key] = initial_active
+            st.rerun()
+    with col_t_toggle:
+        is_vert = st.toggle("Vertical", key=vert_state_key)
 
-    present_keys = [s.key for s in journey.present_stages]
-    session_stage_key = f"sel_stage_{recon.incident_id}"
-    if session_stage_key not in st.session_state or st.session_state[session_stage_key] not in present_keys:
-        st.session_state[session_stage_key] = present_keys[0] if present_keys else None
+    # First pass: count all events by category
+    unfiltered_view = build_timeline_points(recon.events, active_categories=CATEGORY_LABELS, handoff_task_types=handoff_task_types)
 
-    current_stage_key = st.session_state[session_stage_key]
-    orientation = "TB" if is_vert else "LR"
-    dot_str = build_journey_dot(journey, selected_stage_key=current_stage_key, orientation=orientation)
-    st.graphviz_chart(dot_str, use_container_width=True)
-    st.caption("Solid borders = recorded stages. Dashed borders = [NOT RECORDED] in this incident. Edges denote recorded sequence, not causation.")
+    # Multi-select category filter
+    selected_cats = st.multiselect(
+        "Filter Event Categories",
+        options=CATEGORY_LABELS,
+        default=st.session_state[filter_state_key],
+        format_func=lambda cat: f"{cat} ({unfiltered_view.category_counts.get(cat, 0)})",
+        key=f"ms_filter_{recon.incident_id}",
+    )
+    st.session_state[filter_state_key] = selected_cats
 
-    # 6. Stage Selection & Stage Detail Panel
-    if present_keys:
-        key_to_stage = {s.key: s for s in journey.stages}
+    # Build filtered view
+    current_selected_seq = st.session_state[selected_seq_key]
+    view = build_timeline_points(
+        recon.events,
+        active_categories=selected_cats,
+        selected_seq=current_selected_seq,
+        handoff_task_types=handoff_task_types,
+    )
 
-        def stage_format(k: str) -> str:
-            stg = key_to_stage.get(k)
-            return f"{stg.label} ({stg.event_count})" if stg else k
+    # Render Filter Banner
+    st.markdown(
+        f'<div class="mono-text" style="font-size: 0.74rem; color: #8C929D; margin-top: 0.2rem; margin-bottom: 0.5rem;">'
+        f'{escape(view.filter_banner)}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
-        sel = st.segmented_control(
-            "Select Stage to Inspect",
-            options=present_keys,
-            default=current_stage_key if current_stage_key in present_keys else present_keys[0],
-            format_func=stage_format,
-            key=f"stage_segmented_{recon.incident_id}",
+    # Render Altair Chart
+    chart = build_timeline_chart(view, orientation="vertical" if is_vert else "horizontal")
+    chart_event = st.altair_chart(
+        chart,
+        on_select="rerun",
+        key=f"altair_chart_{recon.incident_id}",
+        use_container_width=True,
+    )
+    st.caption("Line = recorded event sequence, not causation. Shapes: ⬥ Significant event, ● Routine query/handoff.")
+
+    # Resolve Chart Selection (returns selected seq from chart click)
+    new_selected_seq = resolve_selected_seq(chart_event, recon.events, current_selected_seq, recon.incident_id)
+    if new_selected_seq != current_selected_seq and new_selected_seq is not None:
+        st.session_state[selected_seq_key] = new_selected_seq
+        # Rebuild view with new selection
+        view = build_timeline_points(
+            recon.events,
+            active_categories=selected_cats,
+            selected_seq=new_selected_seq,
+            handoff_task_types=handoff_task_types,
         )
-        if sel and sel != st.session_state[session_stage_key]:
-            st.session_state[session_stage_key] = sel
+
+    # Navigation Controls (Previous / Next / Go to Seq / Clear Selection)
+    visible_seqs = [p.seq for p in view.visible_points]
+    all_seqs = [p.seq for p in view.points]
+    nav_seqs = visible_seqs if (view.selected_point and view.selected_point.is_visible) else all_seqs
+
+    c_prev, c_next, c_goto, c_clear = st.columns([1, 1, 2, 1.2])
+    with c_prev:
+        if st.button("◀ Prev", key=f"btn_prev_{recon.incident_id}", use_container_width=True, disabled=not nav_seqs):
+            if view.selected_seq and view.selected_seq in nav_seqs:
+                curr_idx = nav_seqs.index(view.selected_seq)
+                if curr_idx > 0:
+                    st.session_state[selected_seq_key] = nav_seqs[curr_idx - 1]
+                    st.rerun()
+            elif nav_seqs:
+                st.session_state[selected_seq_key] = nav_seqs[0]
+                st.rerun()
+    with c_next:
+        if st.button("Next ▶", key=f"btn_next_{recon.incident_id}", use_container_width=True, disabled=not nav_seqs):
+            if view.selected_seq and view.selected_seq in nav_seqs:
+                curr_idx = nav_seqs.index(view.selected_seq)
+                if curr_idx < len(nav_seqs) - 1:
+                    st.session_state[selected_seq_key] = nav_seqs[curr_idx + 1]
+                    st.rerun()
+            elif nav_seqs:
+                st.session_state[selected_seq_key] = nav_seqs[0]
+                st.rerun()
+    with c_goto:
+        goto_seq = st.number_input(
+            "Go to sequence",
+            min_value=1,
+            max_value=max(all_seqs) if all_seqs else 1,
+            value=view.selected_seq or (all_seqs[0] if all_seqs else 1),
+            step=1,
+            key=f"num_goto_{recon.incident_id}",
+            label_visibility="collapsed",
+        )
+        if goto_seq != view.selected_seq and goto_seq in all_seqs:
+            st.session_state[selected_seq_key] = goto_seq
+            st.rerun()
+    with c_clear:
+        if st.button("Clear", key=f"btn_clear_{recon.incident_id}", use_container_width=True):
+            st.session_state[selected_seq_key] = None
             st.rerun()
 
-        active_stage = key_to_stage.get(st.session_state[session_stage_key])
-        if active_stage:
-            status_b = badge_html(active_stage.status)
-            interleave_text = ' &bull; <span style="color: #F59E0B; font-weight: 500;">⚠️ Interleaved sequence</span>' if active_stage.interleaved else ""
-            time_info = ""
-            if active_stage.first_time:
-                t1 = format_timestamp(active_stage.first_time, include_ist=False)
-                t2 = format_timestamp(active_stage.last_time, include_ist=False)
-                time_info = f" &bull; {t1} &rarr; {t2}"
-
-            st.markdown(
-                f"""
-                <div style="border: 1px solid #1D2128; background-color: #111419; padding: 0.75rem 0.9rem; border-radius: 4px; margin-top: 0.4rem; margin-bottom: 0.6rem;">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <div>
-                            <span class="mono-text" style="font-size: 0.85rem; font-weight: 600; color: #FFFFFF;">{escape(active_stage.label)}</span>
-                            <span style="margin-left: 0.5rem;">{status_b}</span>
-                        </div>
-                        <div class="mono-text" style="font-size: 0.75rem; color: #8C929D;">
-                            Seq #{active_stage.first_seq} &rarr; #{active_stage.last_seq}{interleave_text}
-                        </div>
-                    </div>
-                    <div style="font-size: 0.73rem; color: #8C929D; margin-top: 0.25rem;">
-                        <strong>Actors:</strong> {escape(', '.join(active_stage.actors) or 'System')}
-                        {time_info}
-                        &bull; <strong>Events:</strong> {active_stage.event_count}
-                        &bull; <strong>Supporting Queries:</strong> {active_stage.query_count}
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
+    # 6. Event Inspection Panel
+    p = view.selected_point
+    if p is None:
+        st.markdown(
+            '<div class="inspector-panel" style="color: #8C929D; font-size: 0.8rem; text-align: center; padding: 1.5rem 0;">'
+            'Select a point on the timeline to inspect an event.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        hidden_warning = ""
+        if view.is_selected_hidden:
+            hidden_warning = (
+                '<div style="background-color: rgba(245, 158, 11, 0.15); border: 1px solid #F59E0B; color: #F59E0B; '
+                'padding: 0.35rem 0.65rem; border-radius: 3px; font-size: 0.74rem; margin-bottom: 0.5rem;">'
+                '⚠️ Selected event is currently hidden by the category filter.'
+                '</div>'
             )
 
-            # Stage key events table
-            if active_stage.events:
-                st_rows = []
-                for ev in active_stage.events:
-                    at_v = getattr(ev, "at", None) if not isinstance(ev, dict) else ev.get("at")
-                    act_v = getattr(ev, "actor_agent", None) if not isinstance(ev, dict) else ev.get("actor_agent")
-                    tp_v = getattr(ev, "event_type", None) if not isinstance(ev, dict) else ev.get("event_type")
-                    sm_v = getattr(ev, "summary", None) if not isinstance(ev, dict) else ev.get("summary")
-                    oc_v = getattr(ev, "outcome", None) if not isinstance(ev, dict) else ev.get("outcome")
-                    sq_v = getattr(ev, "seq", None) if not isinstance(ev, dict) else ev.get("seq")
+        sig_pill_class = "warning" if p.significance == "SIGNIFICANT" else "neutral"
+        out_pill_class = "success" if p.outcome.upper() in ("PASS", "SUCCESS", "ALLOWED", "VERIFIED") else ("danger" if p.outcome.upper() in ("FAIL", "FAILED", "LAPSED", "BLOCKED") else "neutral")
 
-                    st_rows.append({
-                        "Seq": sq_v,
-                        "Time (UTC)": format_timestamp(at_v, include_ist=False),
-                        "Type": tp_v,
-                        "Actor": act_v or "System",
-                        "Summary": sanitize_dynamic_text(sm_v),
-                        "Outcome": oc_v or "—",
-                    })
-                st.dataframe(st_rows, use_container_width=True, hide_index=True)
+        st.markdown(
+            f"""
+            <div class="inspector-panel">
+                {hidden_warning}
+                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1D2128; padding-bottom: 0.45rem;">
+                    <div>
+                        <span class="mono-text" style="font-size: 1.05rem; font-weight: 700; color: #00D2B4;">EVENT #{p.seq}</span>
+                        <span style="margin-left: 0.5rem; font-size: 0.76rem; color: #D1D5DB; font-weight: 600;">{escape(p.category)}</span>
+                    </div>
+                    <div>
+                        <span class="status-pill {sig_pill_class}">{escape(p.significance)}</span>
+                        <span class="status-pill {out_pill_class}" style="margin-left: 0.3rem;">{escape(p.outcome)}</span>
+                    </div>
+                </div>
 
-            # Supporting queries for this stage (explicitly linked)
-            if active_stage.supporting_queries:
-                with st.expander(f"Supporting Domain Queries ({len(active_stage.supporting_queries)})", expanded=False):
-                    q_rows = []
-                    for qe in active_stage.supporting_queries:
-                        payload = extract_payload(qe)
-                        q_rows.append({
-                            "Seq": getattr(qe, "seq", None) if not isinstance(qe, dict) else qe.get("seq"),
-                            "Query": payload.get("query_name") or "QUERY",
-                            "Rows": payload.get("result_count", 0),
-                            "Elapsed (ms)": f"{payload.get('elapsed_ms', 0):.1f}",
-                            "Params": ", ".join(payload.get("param_keys", [])),
-                        })
-                    st.dataframe(q_rows, use_container_width=True, hide_index=True)
+                <div class="inspector-summary">
+                    <strong style="color: #9CA3AF;">Summary:</strong> {escape(p.summary or 'No summary provided.')}
+                </div>
 
-    # 7. Collapsed Full Audit Trail Expander
-    with st.expander(
-        f"Full Audit Trail ({journey.all_events_count} total events, {journey.supporting_queries_count} supporting queries)",
-        expanded=False,
-    ):
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; font-size: 0.74rem; margin-top: 0.5rem;">
+                    <div>
+                        <div class="micro-label">EVENT TYPE &amp; ID</div>
+                        <div class="mono-text" style="color: #FFFFFF; font-weight: 600;">{escape(p.event_type)}</div>
+                        <div class="mono-text" style="color: #8C929D; font-size: 0.7rem;">{escape(p.event_id)}</div>
+                    </div>
+                    <div>
+                        <div class="micro-label">ACTOR / AGENT</div>
+                        <div class="mono-text" style="color: #FFFFFF;">{escape(p.actor)}</div>
+                        <div style="color: #8C929D; font-size: 0.7rem;">Target: <code class="mono-text">{escape(p.target_id)}</code></div>
+                    </div>
+                    <div>
+                        <div class="micro-label">RECORDED TIME (TRANSACTION)</div>
+                        <div class="mono-text" style="color: #F3F4F6;">{escape(p.timestamp_utc)}</div>
+                        <div class="mono-text" style="color: #8C929D; font-size: 0.7rem;">{escape(p.timestamp_ist)}</div>
+                    </div>
+                    <div>
+                        <div class="micro-label">STEP / TASK TYPE</div>
+                        <div class="mono-text" style="color: #FFFFFF;">{escape(p.step_type if p.step_type != 'n/a' else p.task_type)}</div>
+                        <div style="color: #8C929D; font-size: 0.7rem;">Refs: {len(p.evidence_ids)} ev, {len(p.action_ids)} act</div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Full payload expander
+        if p.payload:
+            with st.expander(f"Event #{p.seq} Full Raw Payload ({len(p.payload)} keys)", expanded=False):
+                st.json(p.payload)
+
+    # 7. Secondary Collapsed Stage Summary Expander
+    journey = build_journey(recon.events, handoff_task_types)
+    with st.expander("Stage summary (7 canonical stages)", expanded=False):
+        stage_dot = build_journey_dot(journey, selected_stage_key=None, orientation="LR")
+        st.graphviz_chart(stage_dot, use_container_width=True)
+        st.caption("Solid borders = recorded stages. Dashed borders = [NOT RECORDED] in this incident. Edges denote recorded sequence, not causation.")
+
+    # 8. Collapsed Full Audit Trail Expander (unaffected by filters or selection)
+    with st.expander(f"Full Audit Trail ({len(recon.events)} events recorded)", expanded=False):
         all_sorted = sorted(
             recon.events,
             key=lambda e: getattr(e, "seq", 0) if not isinstance(e, dict) else e.get("seq", 0),
         )
-        trail_rows = []
-        for ev in all_sorted:
-            at_v = getattr(ev, "at", None) if not isinstance(ev, dict) else ev.get("at")
-            act_v = getattr(ev, "actor_agent", None) if not isinstance(ev, dict) else ev.get("actor_agent")
-            tp_v = getattr(ev, "event_type", None) if not isinstance(ev, dict) else ev.get("event_type")
-            sm_v = getattr(ev, "summary", None) if not isinstance(ev, dict) else ev.get("summary")
-            oc_v = getattr(ev, "outcome", None) if not isinstance(ev, dict) else ev.get("outcome")
-            sq_v = getattr(ev, "seq", None) if not isinstance(ev, dict) else ev.get("seq")
-
-            trail_rows.append({
-                "Seq": sq_v,
-                "Time (UTC)": format_timestamp(at_v, include_ist=False),
-                "Type": tp_v,
-                "Actor": act_v or "System",
-                "Summary": sanitize_dynamic_text(sm_v),
-                "Outcome": oc_v or "—",
-            })
-        if trail_rows:
-            st.dataframe(trail_rows, use_container_width=True, hide_index=True)
-        else:
-            st.info("No episodic events recorded for this incident.")
+        st.markdown(build_timeline_html(all_sorted), unsafe_allow_html=True)
 
 
 def render_section_2_impact(
