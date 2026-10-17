@@ -1,0 +1,16 @@
+# Core graph database client
+falkordb==1.8.0
+
+# UI
+streamlit==1.66.0
+
+# Testing
+pytest==9.1.1
+pytest-timeout==2.3.1
+
+# Config / env loading
+python-dotenv==1.2.4
+
+# Utilities (already pulled in by falkordb, pinned for reproducibility)
+python-dateutil==2.9.0.post0
+redis==8.1.0
