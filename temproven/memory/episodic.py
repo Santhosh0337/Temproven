@@ -77,6 +77,7 @@ class IncidentReconstruction:
     playbook_runs: list[dict[str, Any]]
     evidence_claims: list[dict[str, Any]]
     metrics: dict[str, Any] | None = None
+    instrument_id: str | None = None
 
 
 def make_event_id(incident_id: str, logical_key: str) -> str:
@@ -328,4 +329,5 @@ def reconstruct_incident(gw: GraphGateway, incident_id: str) -> IncidentReconstr
         playbook_runs=playbook_runs,
         evidence_claims=evidence_claims,
         metrics=metrics,
+        instrument_id=header.get("instrument_id"),
     )

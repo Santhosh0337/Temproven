@@ -55,6 +55,33 @@ pytest tests/
 
 ---
 
+## Streamlit UI Dashboard Architecture
+
+The Temproven UI (`temproven/app/streamlit_app.py`) provides an editorial, technical laboratory integrity dashboard structured across four core capability panels:
+
+1. **`01 / INCIDENT` — Incident Overview:**
+   - Incident metadata (ID, Type, Status badge, Instrument, UTC/IST timestamps).
+   - High-level summary metrics (events, actions, tasks, agent handoffs).
+   - Linear episodic event stepper reconstructed from `:FOLLOWS` graph chains.
+   - Associated review tasks with role-based assignment and escalation reasons.
+
+2. **`02 / IMPACT` — Downstream Impact Trace:**
+   - Graphviz directed acyclic graph (DAG) visualizing propagation from instrument through experiments and datasets to published reports.
+   - Inspectable breakdown tables for affected datasets (quarantined), experiments (coverage status & gaps), and downstream reports (held/review).
+
+3. **`03 / INVESTIGATION` — Verified Playbook & Procedural Memory:**
+   - Reusable investigation playbook metadata (`VERIFIED`, execution mode).
+   - Postcondition checklist (PC1 through PC6) confirming diagnostic integrity.
+   - Step-by-step playbook execution results (`PASSED` / `DIFFERED`).
+   - Semantic memory belief change explanations and investigation query efficiency metrics.
+
+4. **`04 / PUBLICATION` — Backend Publication Gate:**
+   - Live upstream dependency inspector for reports.
+   - Honest publication attempt CTA guarded by explicit user confirmation checkbox.
+   - Hero Decision Block displaying real-time `ALLOW`, `BLOCK`, or `REVIEW_REQUIRED` verdicts, justification, and audit timestamps.
+
+---
+
 ## Graph schema, Cypher queries, and time semantics
 
 > To be filled in Phase 7 with the complete schema diagram, query listing, and bitemporal semantics explanation.

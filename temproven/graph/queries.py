@@ -239,6 +239,15 @@ CREATE (rpt)-[:HAS_ATTEMPT]->(pa)
 RETURN pa.id AS id
 """
 
+Q_LIST_REPORTS = """
+MATCH (rpt:Report)
+RETURN
+    rpt.id AS id,
+    rpt.title AS title,
+    rpt.publication_status AS publication_status
+ORDER BY rpt.id ASC
+"""
+
 
 # ── Episodic Memory & Timeline ───────────────────────────────────────────────
 
@@ -306,12 +315,26 @@ ORDER BY ev.seq ASC
 
 Q_GET_INCIDENT_HEADER = """
 MATCH (inc:Incident {id: $incident_id})
+OPTIONAL MATCH (inc)-[:CONCERNS_INSTRUMENT]->(inst:Instrument)
 RETURN
     inc.id AS id,
     inc.incident_type AS incident_type,
     inc.status AS status,
     inc.opened_at AS opened_at,
-    inc.next_seq AS next_seq
+    inc.next_seq AS next_seq,
+    coalesce(inc.instrument_id, inst.id) AS instrument_id
+"""
+
+Q_LIST_INCIDENTS = """
+MATCH (inc:Incident)
+OPTIONAL MATCH (inc)-[:CONCERNS_INSTRUMENT]->(inst:Instrument)
+RETURN
+    inc.id AS id,
+    inc.incident_type AS incident_type,
+    inc.status AS status,
+    inc.opened_at AS opened_at,
+    coalesce(inc.instrument_id, inst.id) AS instrument_id
+ORDER BY inc.opened_at DESC
 """
 
 Q_CLOSE_INCIDENT = """
@@ -550,6 +573,20 @@ RETURN
     ps.params_json AS params_json,
     ps.expected_outcome AS expected_outcome
 ORDER BY ps.order ASC
+"""
+
+Q_GET_PLAYBOOK_BY_SOURCE_INCIDENT = """
+MATCH (p:InvestigationPlaybook {source_incident_id: $incident_id})
+RETURN
+    p.id AS id,
+    p.name AS name,
+    p.version AS version,
+    p.status AS status,
+    p.incident_type AS incident_type,
+    p.source_incident_id AS source_incident_id,
+    p.applicability_json AS applicability_json,
+    p.exploration_summary_json AS exploration_summary_json,
+    p.promotion_checks_json AS promotion_checks_json
 """
 
 Q_RECORD_PLAYBOOK_RUN = """
