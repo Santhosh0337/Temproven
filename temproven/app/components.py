@@ -21,6 +21,7 @@ import streamlit as st
 
 from temproven.app.presenters import (
     build_lineage_dot,
+    build_timeline_html,
     escape,
     format_timestamp,
     get_status_badge,
@@ -169,23 +170,7 @@ def render_section_1_overview(recon: IncidentReconstruction) -> None:
         if not recon.events:
             st.info("No episodic events recorded for this incident.")
         else:
-            timeline_items = []
-            for ev in recon.events:
-                t_str = format_timestamp(ev.at, include_ist=False)
-                act_badge = f'<span class="mono-text" style="color: #8A9099; font-size: 0.7rem;">[{escape(ev.actor_agent)}]</span>'
-                outcome_str = f' &mdash; <span style="color: #5E9E7A;">{escape(ev.outcome)}</span>' if ev.outcome else ""
-                item_html = f"""
-                <div class="timeline-item">
-                    <div class="timeline-dot"></div>
-                    <div class="timeline-time mono-text">{escape(t_str)}</div>
-                    <div class="timeline-type mono-text">{escape(ev.event_type)} {act_badge}</div>
-                    <div class="timeline-summary">{escape(ev.summary)}{outcome_str}</div>
-                </div>
-                """
-                timeline_items.append(item_html)
-
-            stepper_html = f'<div style="margin-top: 0.5rem;">{"".join(timeline_items)}</div>'
-            st.markdown(stepper_html, unsafe_allow_html=True)
+            st.markdown(build_timeline_html(recon.events), unsafe_allow_html=True)
 
     # Incident Tasks List
     if recon.tasks:

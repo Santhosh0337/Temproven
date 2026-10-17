@@ -54,13 +54,14 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
 @st.cache_resource
-def get_gateway() -> GraphGateway:
+def get_gateway(graph_name: str | None = None) -> GraphGateway:
     """Acquire single cached GraphGateway for the session."""
-    return GraphGateway(graph_name=config.GRAPH_NAME)
+    name = graph_name or config.GRAPH_NAME
+    return GraphGateway(graph_name=name)
 
 
 def main() -> None:
-    gw = get_gateway()
+    gw = get_gateway(config.GRAPH_NAME)
 
     # 1. Connectivity Check
     db_ok, db_err = check_db_connection(gw)

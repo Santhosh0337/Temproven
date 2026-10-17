@@ -224,6 +224,14 @@ code, pre, .mono-text {{
 .timeline-summary {{
     font-size: 0.8rem;
     color: {TEXT_COLOR};
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}}
+
+.timeline-empty {{
+    color: {MUTED_TEXT};
+    font-size: 0.8rem;
+    padding: 0.5rem 0;
 }}
 
 /* Publication Gate Hero Block */

@@ -13,10 +13,12 @@ from temproven.app.presenters import (
     STATUS_MAP,
     StatusBadge,
     build_lineage_dot,
+    build_timeline_html,
     escape,
     format_interval,
     format_timestamp,
     get_status_badge,
+    sanitize_dynamic_text,
 )
 from temproven.domain.gate import GateDecision
 from temproven.domain.temporal import CoverageStatus
@@ -157,3 +159,104 @@ def test_build_lineage_dot_empty_and_populated():
     assert "HELD" in dot
     assert "USES_DATASET" not in dot  # Replaced with label="USES"
     assert "USES" in dot
+
+
+def test_timeline_html_markdown_safety_invariants():
+    """Verify that generated timeline HTML has no blank lines and no indented lines (4+ spaces)."""
+    events = [
+        {
+            "at": 1792227600,
+            "event_type": "INCIDENT_OPENED",
+            "actor_agent": "EvidenceAgent",
+            "summary": "Incident opened for INS-A",
+            "outcome": "SUCCESS",
+        },
+        {
+            "at": 1792227650,
+            "event_type": "EVIDENCE_INGESTED",
+            "actor_agent": "EvidenceAgent",
+            "summary": "Ingested correction CORR-2026-NMI-099",
+            "outcome": None,
+        },
+    ]
+
+    html_out = build_timeline_html(events)
+    lines = html_out.splitlines()
+
+    # Invariant 1: No line begins with 4 or more spaces or a tab
+    for line in lines:
+        assert not line.startswith("    "), f"Indented line detected (4 spaces): {line!r}"
+        assert not line.startswith("\t"), f"Indented line detected (tab): {line!r}"
+
+    # Invariant 2: No blank lines anywhere in the HTML output
+    for line in lines:
+        assert line.strip() != "", "Blank line detected in timeline HTML"
+
+    # Invariant 3: Structural tags appear exactly once per event
+    assert html_out.count('class="timeline-item"') == 2
+    assert html_out.count('class="timeline-dot"') == 2
+
+
+def test_timeline_html_hostile_input_handling():
+    """
+    Assert that hostile, unusual, or markdown-triggering text in event fields
+    is neutralized without breaking HTML structure or unescaped injection.
+    """
+    hostile_events = [
+        {
+            "at": 1792227600,
+            "event_type": "<script>alert(1)</script>",
+            "actor_agent": '</div><div class="x">injected</div>',
+            "summary": "Text with\n\nblank lines and \r\ncarriage returns",
+            "outcome": "Line with    four leading spaces",
+        },
+        {
+            "at": 1792227700,
+            "event_type": "$x$ math and $5 and $10 prices",
+            "actor_agent": "Agent `with_code` and ```fences```",
+            "summary": "**bold**, # heading, > quote, - list item",
+            "outcome": "A" * 300,  # very long unbroken string
+        },
+        {
+            "at": None,
+            "event_type": "Unicode: 🔬 🧪 ⚛️ \u2192 \u2014",
+            "actor_agent": "",
+            "summary": "",
+            "outcome": None,
+        },
+    ]
+
+    html_out = build_timeline_html(hostile_events)
+
+    # Raw script/div injection tags must never appear
+    assert "<script" not in html_out
+    assert "&lt;script&gt;" in html_out
+    assert 'injected</div>' not in html_out
+    assert '&lt;/div&gt;&lt;div class=&quot;x&quot;&gt;injected&lt;/div&gt;' in html_out
+
+    # Math mode $ must be neutralized to prevent KaTeX math mode in Streamlit
+    assert "$x$" not in html_out
+    assert "&#36;x&#36;" in html_out
+
+    # Backtick must be neutralized to prevent code fences
+    assert "`with_code`" not in html_out
+    assert "&#96;with_code&#96;" in html_out
+
+    # Markdown safety: no blank lines, no 4-space indented lines
+    for line in html_out.splitlines():
+        assert not line.startswith("    ")
+        assert not line.startswith("\t")
+        assert line.strip() != ""
+
+    # Exactly 3 timeline items for 3 events
+    assert html_out.count('class="timeline-item"') == 3
+    assert html_out.count('class="timeline-dot"') == 3
+
+
+def test_timeline_html_empty_list():
+    """Empty list returns safe empty state with no stray markup or crash."""
+    empty_html = build_timeline_html([])
+    assert "No episodic events recorded" in empty_html
+    assert 'class="timeline-item"' not in empty_html
+    assert 'class="timeline-dot"' not in empty_html
+    assert not any(line.startswith("    ") for line in empty_html.splitlines())

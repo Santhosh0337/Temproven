@@ -232,3 +232,65 @@ def build_lineage_dot(
 
     lines.append('}')
     return '\n'.join(lines)
+
+
+def sanitize_dynamic_text(text: Any) -> str:
+    """
+    Sanitize dynamic text for safe embedding in Streamlit markdown HTML:
+    - Normalizes newlines and whitespace runs into single spaces to prevent
+      blank lines or indented code block triggers in CommonMark.
+    - Uses html.escape(..., quote=True) to prevent HTML tag or attribute injection.
+    - Neutralizes math mode '$' as '&#36;' and inline code backtick '`' as '&#96;'.
+    """
+    if text is None:
+        return ""
+    # Collapse newlines and whitespace runs into single spaces
+    normalized = " ".join(str(text).split())
+    # HTML escape with quotes
+    escaped = html.escape(normalized, quote=True)
+    # Neutralize Streamlit markdown triggers (math and code)
+    return escaped.replace("$", "&#36;").replace("`", "&#96;")
+
+
+def build_timeline_html(events: list[Any]) -> str:
+    """
+    Pure presentation function to construct markdown-safe timeline HTML:
+    - Guaranteed zero lines beginning with 4+ spaces or tabs.
+    - Guaranteed zero blank lines.
+    - All dynamic fields properly escaped and neutralized.
+    """
+    if not events:
+        return '<div class="timeline-empty" style="color: #8A9099; font-size: 0.8rem; padding: 0.5rem 0;">No episodic events recorded for this incident.</div>'
+
+    items: list[str] = []
+    for ev in events:
+        at_val = getattr(ev, "at", None) if not isinstance(ev, dict) else ev.get("at")
+        actor_val = getattr(ev, "actor_agent", None) if not isinstance(ev, dict) else ev.get("actor_agent")
+        type_val = getattr(ev, "event_type", None) if not isinstance(ev, dict) else ev.get("event_type")
+        summary_val = getattr(ev, "summary", None) if not isinstance(ev, dict) else ev.get("summary")
+        outcome_val = getattr(ev, "outcome", None) if not isinstance(ev, dict) else ev.get("outcome")
+
+        t_str = format_timestamp(at_val, include_ist=False) if at_val is not None else "TIME: None"
+        safe_time = sanitize_dynamic_text(t_str)
+        safe_actor = sanitize_dynamic_text(actor_val or "UnknownAgent")
+        safe_type = sanitize_dynamic_text(type_val or "EVENT")
+        safe_summary = sanitize_dynamic_text(summary_val or "No summary")
+
+        outcome_html = ""
+        if outcome_val:
+            safe_outcome = sanitize_dynamic_text(outcome_val)
+            outcome_html = f' &mdash; <span style="color: #5E9E7A;">{safe_outcome}</span>'
+
+        act_badge = f'<span class="mono-text" style="color: #8A9099; font-size: 0.7rem;">[{safe_actor}]</span>'
+
+        item = (
+            f'<div class="timeline-item">'
+            f'<div class="timeline-dot"></div>'
+            f'<div class="timeline-time mono-text">{safe_time}</div>'
+            f'<div class="timeline-type mono-text">{safe_type} {act_badge}</div>'
+            f'<div class="timeline-summary">{safe_summary}{outcome_html}</div>'
+            f'</div>'
+        )
+        items.append(item)
+
+    return f'<div style="margin-top: 0.5rem;">{"".join(items)}</div>'
