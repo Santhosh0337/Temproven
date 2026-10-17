@@ -21,6 +21,7 @@ from temproven.agents.integrity import IntegrityAgent
 from temproven.agents.orchestrator import Orchestrator
 from temproven.clock import FixedClock
 from temproven.context import RunContext, MetricsScope
+from temproven.domain.gate import PublicationGate
 from temproven.domain.temporal import parse_iso_to_epoch
 from temproven.graph import queries
 from temproven.graph.gateway import GraphGateway
@@ -251,3 +252,111 @@ def test_closed_incident_reprocessing_guard(test_gw):
 
     assert events_before == events_after
     assert actions_before == actions_after
+
+
+def test_multi_incident_task_isolation_and_no_leakage(test_gw):
+    """
+    Regression test verifying:
+    - Incident 1 creates and shows its own tasks (DS-A3, DS-A4, DS-A5, RPT-1).
+    - Incident 2 creates and shows its own tasks (DS-B3, DS-B4).
+    - Zero tasks from Incident 1 leak into Incident 2 or vice versa.
+    - Publication gate accurately re-evaluates live evidence.
+    - Reprocessing closed Incident 2 remains idempotent.
+    """
+    seed_graph(test_gw, clear_existing=False)
+
+    # 1. Run Incident 1 at t1 = 2026-10-17T09:00:00Z
+    t1 = parse_iso_to_epoch("2026-10-17T09:00:00Z")
+    clock = FixedClock(t1)
+    inc1_id = "INC-2026-001"
+    ctx1 = RunContext(incident_id=inc1_id, actor_agent="EvidenceAgent", clock=clock, metrics=MetricsScope(), recorder=EpisodicRecorder())
+
+    evidence_agent1 = EvidenceAgent(test_gw, clock)
+    t_v2_end = parse_iso_to_epoch("2026-06-01T00:00:00Z")
+    evidence_agent1.ingest_and_open_incident(
+        incident_id=inc1_id,
+        instrument_id="INS-A",
+        cert_id="CERT-A1",
+        old_claim_id="CLAIM-A1-v1",
+        new_claim_id="CLAIM-A1-v2",
+        new_valid_until=t_v2_end,
+        evidence_id="EV-A1-v2",
+        evidence_ref="CORR-2026-NMI-099",
+        description="Sensor drift detected on INS-A",
+        trust_level="AUTHORITATIVE",
+        ctx=ctx1,
+    )
+
+    orch1 = Orchestrator(test_gw, clock)
+    res1 = orch1.run(inc1_id, ctx1)
+    assert res1["status"] == "COMPLETED"
+
+    # Query Incident 1 tasks
+    tasks1 = test_gw.query(queries.Q_GET_INCIDENT_TASKS, {"incident_id": inc1_id})
+    targets1 = {t["target_id"] for t in tasks1}
+    assert "DS-A5" in targets1 or "DS-A3" in targets1
+    assert not any("DS-B" in t["target_id"] for t in tasks1), "Incident 2 tasks leaked into Incident 1!"
+
+    # 2. Advance clock and run Incident 2 at t2 = 2026-10-17T12:00:00Z
+    t2 = parse_iso_to_epoch("2026-10-17T12:00:00Z")
+    clock.advance_to(t2)
+    inc2_id = "INC-2026-002"
+    ctx2 = RunContext(incident_id=inc2_id, actor_agent="EvidenceAgent", clock=clock, metrics=MetricsScope(), recorder=EpisodicRecorder())
+
+    evidence_agent2 = EvidenceAgent(test_gw, clock)
+    t_b2_short = parse_iso_to_epoch("2026-05-01T00:00:00Z")
+    evidence_agent2.ingest_and_open_incident(
+        incident_id=inc2_id,
+        instrument_id="INS-B",
+        cert_id="CERT-B2",
+        old_claim_id="CLAIM-B2-v1",
+        new_claim_id="CLAIM-B2-v2",
+        new_valid_until=t_b2_short,
+        evidence_id="EV-B2-v2",
+        evidence_ref="CORR-2026-NMI-142",
+        description="Thermocouple drift shortened CERT-B2",
+        trust_level="AUTHORITATIVE",
+        ctx=ctx2,
+    )
+
+    orch2 = Orchestrator(test_gw, clock)
+    res2 = orch2.run(inc2_id, ctx2)
+    assert res2["status"] == "COMPLETED"
+
+    # Query Incident 2 tasks: MUST ONLY CONTAIN DS-B3 and DS-B4!
+    tasks2 = test_gw.query(queries.Q_GET_INCIDENT_TASKS, {"incident_id": inc2_id})
+    targets2 = {t["target_id"] for t in tasks2}
+    assert targets2 == {"DS-B3", "DS-B4"}, f"Expected only DS-B3 and DS-B4, got {targets2}"
+    assert not any("DS-A" in t["target_id"] for t in tasks2), "Incident 1 tasks leaked into Incident 2!"
+
+    # Verify escalation status on Incident 2 tasks
+    for t in tasks2:
+        assert t["status"] == "ESCALATED"
+        assert t["assignee_id"] is None
+        assert "No owner, performer, or custodian" in (t.get("escalation_reason") or "")
+
+    # Re-query Incident 1 tasks: MUST STILL BE PRESERVED
+    tasks1_again = test_gw.query(queries.Q_GET_INCIDENT_TASKS, {"incident_id": inc1_id})
+    targets1_again = {t["target_id"] for t in tasks1_again}
+    assert targets1_again == targets1
+    assert not any("DS-B" in t["target_id"] for t in tasks1_again), "Incident 2 tasks leaked into Incident 1!"
+
+    # 3. Verify publication gate enforcement
+    gate = PublicationGate(clock=clock)
+    res_rpt1 = gate.attempt_publish(test_gw, "RPT-1", actor="LeadScientist_Alice")
+    assert not res_rpt1.is_allowed
+    assert "quarantined" in res_rpt1.reason.lower()
+
+    res_rpt3 = gate.attempt_publish(test_gw, "RPT-3", actor="LeadScientist_Bob")
+    assert not res_rpt3.is_allowed
+    assert "quarantined" in res_rpt3.reason.lower()
+
+    res_rpt2 = gate.attempt_publish(test_gw, "RPT-2", actor="LeadScientist_Alice")
+    assert res_rpt2.is_allowed
+
+    # 4. Verify reprocessing idempotency on closed Incident 2
+    re_res = orch2.run(inc2_id, ctx2)
+    assert re_res["status"] == "ALREADY_PROCESSED"
+
+    tasks2_after = test_gw.query(queries.Q_GET_INCIDENT_TASKS, {"incident_id": inc2_id})
+    assert len(tasks2_after) == len(tasks2)

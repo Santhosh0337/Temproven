@@ -53,12 +53,13 @@ class ImpactAgent:
             ladder_res = DiagnosticLadder.run_ladder(self.gw, ctx, instrument_id=instrument_id)
 
             # 2. Run READ steps directly
+            step_params = state.get("params", {})
             for st_name in ("CONFIRM_LAPSE", "TRACE_DEPENDENTS", "PROPOSE_ACTIONS"):
                 step_def = STEP_REGISTRY[st_name]
-                pre = step_def.precondition(self.gw, ctx, {}, state)
+                pre = step_def.precondition(self.gw, ctx, step_params, state)
                 if pre.passed:
-                    outcome = step_def.execute(self.gw, ctx, {}, state)
-                    step_def.postcondition(self.gw, ctx, {}, state, outcome)
+                    outcome = step_def.execute(self.gw, ctx, step_params, state)
+                    step_def.postcondition(self.gw, ctx, step_params, state, outcome)
         else:
             # Reusing playbook: execute READ steps
             run_id = f"run_{ctx.incident_id}_{playbook_id}"
@@ -165,12 +166,13 @@ class ImpactAgent:
 
         if mode == "EXPLORATORY":
             # Run WRITE steps directly
+            step_params = state.get("params", {})
             for st_name in ("QUARANTINE_DATASETS", "HOLD_REPORTS", "CREATE_ASSIGN_TASKS", "VERIFY_GATE_BLOCKS"):
                 step_def = STEP_REGISTRY[st_name]
-                pre = step_def.precondition(self.gw, ctx, {}, state)
+                pre = step_def.precondition(self.gw, ctx, step_params, state)
                 if pre.passed:
-                    outcome = step_def.execute(self.gw, ctx, {}, state)
-                    step_def.postcondition(self.gw, ctx, {}, state, outcome)
+                    outcome = step_def.execute(self.gw, ctx, step_params, state)
+                    step_def.postcondition(self.gw, ctx, step_params, state, outcome)
         else:
             # Reusing playbook: execute WRITE steps with StepResult tracking
             run_id = f"run_{ctx.incident_id}_{playbook_id}"

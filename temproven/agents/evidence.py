@@ -58,11 +58,19 @@ class EvidenceAgent:
             MERGE (inc:Incident {id: $incident_id})
             ON CREATE SET
                 inc.incident_type = $incident_type,
+                inc.instrument_id = $instrument_id,
                 inc.status = 'IN_PROGRESS',
                 inc.opened_at = $at,
                 inc.next_seq = 1
+            ON MATCH SET
+                inc.instrument_id = coalesce(inc.instrument_id, $instrument_id)
+            WITH inc
+            OPTIONAL MATCH (inst:Instrument {id: $instrument_id})
+            FOREACH (_ IN CASE WHEN inst IS NOT NULL THEN [1] ELSE [] END |
+                MERGE (inc)-[:CONCERNS_INSTRUMENT]->(inst)
+            )
             """,
-            {"incident_id": incident_id, "incident_type": incident_type, "at": at_epoch},
+            {"incident_id": incident_id, "incident_type": incident_type, "instrument_id": instrument_id, "at": at_epoch},
             name="ENSURE_INCIDENT",
             ctx=ctx,
         )

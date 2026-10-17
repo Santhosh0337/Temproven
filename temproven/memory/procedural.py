@@ -182,8 +182,26 @@ def _pre_confirm_lapse(gw: GraphGateway, ctx: RunContext, params: dict, state: d
 
 
 def _exec_confirm_lapse(gw: GraphGateway, ctx: RunContext, params: dict, state: dict) -> StepOutcome:
-    instrument_id = params.get("instrument_id")
-    results = evaluate_usage_coverage(gw, t=ctx.clock.now_epoch(), instrument_id=instrument_id)
+    instrument_id = (
+        params.get("instrument_id")
+        or state.get("params", {}).get("instrument_id")
+        or state.get("instrument_id")
+    )
+    if not instrument_id and ctx.incident_id:
+        inc_rows = gw.query(
+            """
+            MATCH (inc:Incident {id: $id})
+            OPTIONAL MATCH (inc)-[:CONCERNS_INSTRUMENT]->(inst:Instrument)
+            RETURN coalesce(inc.instrument_id, inst.id) AS inst_id
+            """,
+            {"id": ctx.incident_id},
+            name="GET_INCIDENT_INSTRUMENT",
+            ctx=ctx,
+        )
+        if inc_rows and inc_rows[0].get("inst_id"):
+            instrument_id = inc_rows[0]["inst_id"]
+
+    results = evaluate_usage_coverage(gw, t=ctx.clock.now_epoch(), instrument_id=instrument_id, ctx=ctx)
     lapsed_usages = [u for u in results if not u.is_allowed]
     lapsed_exp_ids = list(set(u.experiment_id for u in lapsed_usages if u.experiment_id))
     coverage_modes = list(set("chain" if "chain" in u.status.value.lower() else "single" for u in results if u.is_allowed))
@@ -219,7 +237,7 @@ def _pre_trace_dependents(gw: GraphGateway, ctx: RunContext, params: dict, state
 
 def _exec_trace_dependents(gw: GraphGateway, ctx: RunContext, params: dict, state: dict) -> StepOutcome:
     lapsed_exp_ids = state["lapsed_exp_ids"]
-    impact = ActionService.trace_impact(gw, lapsed_exp_ids)
+    impact = ActionService.trace_impact(gw, lapsed_exp_ids, ctx=ctx)
     state["impact"] = impact
     max_depth = max((len(ds.dependency_path) for ds in impact.datasets), default=1)
     state["max_lineage_depth"] = max_depth
@@ -257,7 +275,7 @@ def _exec_propose_actions(gw: GraphGateway, ctx: RunContext, params: dict, state
     has_escalations = False
 
     for ds in impact.datasets:
-        assign_res = ActionService.resolve_assignment(gw, ds.id)
+        assign_res = ActionService.resolve_assignment(gw, ds.id, ctx=ctx)
         role = assign_res.role_matched or "ESCALATED"
         assignment_modes.append(role)
         if assign_res.is_escalated:
@@ -323,6 +341,7 @@ def _exec_quarantine(gw: GraphGateway, ctx: RunContext, params: dict, state: dic
         impact=impact,
         recorded_at=ctx.clock.now_epoch(),
         actor_agent=ctx.actor_agent,
+        ctx=ctx,
     )
     state["action_result"] = res
     return StepOutcome(
@@ -744,12 +763,13 @@ def execute_playbook_step(
         raise ValueError(f"Unknown step type: {step_type}")
 
     expected = json.loads(step.get("expected_outcome") or "{}")
+    step_params = state.get("params", {})
 
     t0 = time.perf_counter()
     domain_queries_before = ctx.metrics.domain_queries if ctx.metrics else 0
 
     # 1. Precondition
-    pre_res = step_def.precondition(gw, ctx, {}, state)
+    pre_res = step_def.precondition(gw, ctx, step_params, state)
     if not pre_res.passed:
         # Precondition failed
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
@@ -771,14 +791,15 @@ def execute_playbook_step(
                 "elapsed_ms": elapsed_ms,
             },
             name="RECORD_STEP_RESULT",
+            ctx=ctx,
         )
         return {"status": StepStatus.FAILED.value, "detail": pre_res.reason}
 
     # 2. Execute
-    outcome = step_def.execute(gw, ctx, {}, state)
+    outcome = step_def.execute(gw, ctx, step_params, state)
 
     # 3. Postcondition
-    post_res = step_def.postcondition(gw, ctx, {}, state, outcome)
+    post_res = step_def.postcondition(gw, ctx, step_params, state, outcome)
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
     domain_queries_after = ctx.metrics.domain_queries if ctx.metrics else 0
