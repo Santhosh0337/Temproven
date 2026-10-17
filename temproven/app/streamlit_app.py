@@ -162,25 +162,27 @@ def main() -> None:
 
     reports = fetch_reports(gw)
 
-    # 5. Render 2x2 Grid Architecture
-    # ── Top Row: Panel 01 & Panel 02 ─────────────────────────────────────────
-    col_top_left, col_top_right = st.columns(2, gap="large")
-
-    with col_top_left:
-        render_section_1_overview(recon)
-
-    with col_top_right:
-        render_section_2_impact(recon.instrument_id, impact_data)
+    # 5. Render Editorial Technical Dashboard Architecture
+    # ── Visual Centerpiece: 01 / Incident Overview & Journey Graph ───────────
+    render_section_1_overview(
+        recon,
+        impact_data=impact_data,
+        playbook_data=playbook_data,
+        belief_change=belief_change,
+    )
 
     st.markdown(
-        "<div style='height: 1px; background-color: #26292D; margin: 1.5rem 0;'></div>",
+        "<div style='height: 1px; background-color: #1D2128; margin: 1.5rem 0;'></div>",
         unsafe_allow_html=True,
     )
 
-    # ── Bottom Row: Panel 03 & Panel 04 ──────────────────────────────────────
-    col_bottom_left, col_bottom_right = st.columns(2, gap="large")
+    # ── Operational Row: 02 / Impact Trace & 03 / Investigation Memory ───────
+    col_mid_left, col_mid_right = st.columns(2, gap="large")
 
-    with col_bottom_left:
+    with col_mid_left:
+        render_section_2_impact(recon.instrument_id, impact_data)
+
+    with col_mid_right:
         render_section_3_memory(
             selected_incident_id,
             playbook_data,
@@ -189,18 +191,23 @@ def main() -> None:
             baseline_metrics=baseline_metrics,
         )
 
-    with col_bottom_right:
-        def on_publish(report_id: str, actor: str):
-            return execute_gate_action(gw, report_id, actor, clock=RealClock())
+    st.markdown(
+        "<div style='height: 1px; background-color: #1D2128; margin: 1.5rem 0;'></div>",
+        unsafe_allow_html=True,
+    )
 
-        def get_report_details(report_id: str):
-            return fetch_report_details(gw, report_id)
+    # ── Verification & Action: 04 / Backend Publication Gate ─────────────────
+    def on_publish(report_id: str, actor: str):
+        return execute_gate_action(gw, report_id, actor, clock=RealClock())
 
-        render_section_4_gate(
-            reports,
-            on_publish_fn=on_publish,
-            report_details_fn=get_report_details,
-        )
+    def get_report_details(report_id: str):
+        return fetch_report_details(gw, report_id)
+
+    render_section_4_gate(
+        reports,
+        on_publish_fn=on_publish,
+        report_details_fn=get_report_details,
+    )
 
 
 if __name__ == "__main__":

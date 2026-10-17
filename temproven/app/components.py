@@ -19,12 +19,19 @@ import json
 from typing import Any, Callable
 import streamlit as st
 
+from temproven.app.journey import (
+    build_journey,
+    build_journey_dot,
+    extract_payload,
+)
 from temproven.app.presenters import (
     build_lineage_dot,
     build_timeline_html,
     escape,
+    format_interval,
     format_timestamp,
     get_status_badge,
+    sanitize_dynamic_text,
 )
 from temproven.app.theme import (
     COLOR_ALERT,
@@ -53,22 +60,25 @@ def render_header(
     Render top-level dashboard header and live FalkorDB connectivity indicator.
     """
     if db_ok:
-        status_dot = '<span class="status-indicator" style="background-color: #5E9E7A;"></span>'
+        status_dot = '<span class="status-indicator connected"></span>'
         status_text = f'FALKORDB: CONNECTED ({escape(graph_name)})'
     else:
-        status_dot = '<span class="status-indicator" style="background-color: #E8553D;"></span>'
+        status_dot = '<span class="status-indicator unavailable"></span>'
         err_hint = f" ({escape(error_msg)})" if error_msg else ""
         status_text = f'FALKORDB: UNAVAILABLE{err_hint}'
 
     header_html = f"""
-    <div class="temproven-header">
-        <div>
-            <h1 class="temproven-title">TEMPROVEN</h1>
-            <div class="temproven-subtitle">When evidence changes, every dependent decision must be reconsidered.</div>
-        </div>
-        <div>
-            <div class="db-status-badge">
-                {status_dot} {status_text}
+    <div>
+        <div class="temproven-breadcrumb">TEMPROVEN CONTROL PLANE &bull; LABORATORY INTEGRITY &amp; INCIDENT LEARNING</div>
+        <div class="temproven-header">
+            <div>
+                <h1 class="temproven-title">TEMPROVEN</h1>
+                <div class="temproven-subtitle">When evidence changes, every dependent decision must be reconsidered.</div>
+            </div>
+            <div>
+                <div class="db-status-badge">
+                    {status_dot} {status_text}
+                </div>
             </div>
         </div>
     </div>
@@ -76,46 +86,41 @@ def render_header(
     st.markdown(header_html, unsafe_allow_html=True)
 
 
-def render_section_1_overview(recon: IncidentReconstruction) -> None:
+def render_section_1_overview(
+    recon: IncidentReconstruction,
+    impact_data: dict[str, Any] | None = None,
+    playbook_data: dict[str, Any] | None = None,
+    belief_change: Any | None = None,
+) -> None:
     """
-    Panel 01: Incident Overview.
-    Displays incident metadata, affected summary counts, and vertical timeline stepper.
+    Panel 01: Incident Journey & Overview.
+    Displays:
+    - Incident header strip with metadata
+    - Triggering evidence revision block (separating valid time vs recorded time)
+    - Key figures row (affected experiments, datasets, reports, tasks; em dash '—' if unavailable)
+    - Major outcomes row (quarantined counts/ids, held reports, task escalations, closure/playbook status)
+    - Incident Journey Graph (compact 7 canonical stages with layout toggle)
+    - Interactive Stage Selection and Stage Detail panel
+    - Collapsed Full Audit Trail expander
     """
     st.markdown(
         """
         <div class="panel-header">
             <div>
                 <div class="panel-num">01 / INCIDENT</div>
-                <h3 class="panel-title">Incident Overview</h3>
+                <h3 class="panel-title">Incident Journey & Overview</h3>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # Rationale description
-    inst_label = recon.instrument_id or "Instrument"
-    if recon.incident_id == "INC-2026-001":
-        rationale = (
-            f"Authoritative metrology correction shortened validity of {inst_label} certification. "
-            "Dependent datasets quarantined, affected reports held, and owner review tasks assigned."
-        )
-    elif recon.incident_id == "INC-2026-002":
-        rationale = (
-            f"Authoritative thermocouple drift reported on {inst_label}. "
-            "Reused verified playbook from Incident 1 to execute fast, deterministic revalidation."
-        )
-    else:
-        rationale = f"Integrity incident for {inst_label}. Temporal reasoning active."
-
-    st.markdown(f'<p class="panel-desc">{escape(rationale)}</p>', unsafe_allow_html=True)
-
-    # Metadata Grid
+    # 1. Header Strip: Incident Metadata
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.markdown(
             f'<div class="micro-label">Incident ID</div>'
-            f'<div class="micro-value">{escape(recon.incident_id)}</div>',
+            f'<div class="micro-value mono-text">{escape(recon.incident_id)}</div>',
             unsafe_allow_html=True,
         )
     with c2:
@@ -133,18 +138,18 @@ def render_section_1_overview(recon: IncidentReconstruction) -> None:
     with c4:
         st.markdown(
             f'<div class="micro-label">Instrument</div>'
-            f'<div class="micro-value">{escape(recon.instrument_id or "N/A")}</div>',
+            f'<div class="micro-value mono-text">{escape(recon.instrument_id or "N/A")}</div>',
             unsafe_allow_html=True,
         )
 
     # Secondary metadata row
-    st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-    m1, m2 = st.columns([2, 1])
+    st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
+    m1, m2, m3, m4 = st.columns(4)
     with m1:
         opened_str = format_timestamp(recon.opened_at, include_ist=True)
         st.markdown(
             f'<div class="micro-label">Opened At</div>'
-            f'<div class="micro-value mono-text" style="font-size: 0.8rem;">{escape(opened_str)}</div>',
+            f'<div class="micro-value mono-text" style="font-size: 0.75rem;">{escape(opened_str)}</div>',
             unsafe_allow_html=True,
         )
     with m2:
@@ -153,40 +158,298 @@ def render_section_1_overview(recon: IncidentReconstruction) -> None:
             f'<div class="micro-value mono-text">{recon.next_seq}</div>',
             unsafe_allow_html=True,
         )
+    with m3:
+        st.markdown(
+            f'<div class="micro-label">Timeline Events</div>'
+            f'<div class="micro-value mono-text">{len(recon.events)}</div>',
+            unsafe_allow_html=True,
+        )
+    with m4:
+        st.markdown(
+            f'<div class="micro-label">Agent Handoffs</div>'
+            f'<div class="micro-value mono-text">{len(recon.handoffs)}</div>',
+            unsafe_allow_html=True,
+        )
 
-    st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+    # 2. Triggering Evidence & Belief Revision Block (Valid Time vs Recorded Time)
+    prior_html = ""
+    if belief_change and hasattr(belief_change, "current_belief"):
+        cb = belief_change.current_belief
+        pb = getattr(belief_change, "previous_belief", None)
+        ev_obj = getattr(cb, "evidence", None)
+        ev_id = getattr(ev_obj, "id", "EV-CORRECTION") if ev_obj else "EV-CORRECTION"
+        source_type = getattr(ev_obj, "source_type", "CALIBRATION_AUTHORITY") if ev_obj else "CALIBRATION_AUTHORITY"
+        trust_level = getattr(ev_obj, "trust_level", "AUTHORITATIVE") if ev_obj else "AUTHORITATIVE"
+        val_str = format_interval(belief_change.applies_from, belief_change.applies_until, interval_kind="VALID TIME")
+        rec_str = format_timestamp(cb.recorded_at, time_label="RECORDED TIME", include_ist=True)
+        ev_summary = cb.summary or getattr(belief_change, "rationale", "Authoritative calibration update supersedes prior claim.")
+        if pb and pb.valid_from and pb.valid_until:
+            prior_interval_str = format_interval(pb.valid_from, pb.valid_until, interval_kind="PRIOR VALID TIME")
+            prior_html = f'<div class="mono-text" style="font-size: 0.72rem; color: #8A9099; text-decoration: line-through; margin-top: 2px;">{escape(prior_interval_str)}</div>'
+    elif recon.evidence_claims:
+        ec = recon.evidence_claims[0]
+        ev_id = ec.get("evidence_id") or "EV-CLAIM"
+        source_type = ec.get("source_type") or "CALIBRATION_AUTHORITY"
+        trust_level = ec.get("trust_level") or "AUTHORITATIVE"
+        val_str = format_interval(ec.get("valid_from"), ec.get("valid_until"), interval_kind="VALID TIME")
+        rec_str = format_timestamp(ec.get("recorded_at"), time_label="RECORDED TIME", include_ist=True)
+        ev_summary = f"Claim {ec.get('claim_id', '')} validity revised based on authoritative evidence {ev_id}."
+    else:
+        ev_id = "EV-MANUAL"
+        source_type = "OPERATOR"
+        trust_level = "VERIFIED"
+        val_str = "[VALID TIME] Derived from incident scope"
+        rec_str = format_timestamp(recon.opened_at, time_label="RECORDED TIME", include_ist=True)
+        ev_summary = "Incident scope initialized from laboratory event record."
 
-    # Summary Metrics
-    s1, s2, s3, s4 = st.columns(4)
-    s1.metric("Timeline Events", len(recon.events))
-    s2.metric("Actions Applied", len(recon.action_records))
-    s3.metric("Tasks Tracked", len(recon.tasks))
-    s4.metric("Agent Handoffs", len(recon.handoffs))
+    evidence_block_html = f"""
+    <div style="border: 1px solid #1D2128; background-color: #111419; padding: 0.75rem 0.9rem; border-radius: 4px; margin: 0.6rem 0;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
+            <span class="micro-label" style="letter-spacing: 0.08em;">TRIGGERING EVIDENCE &amp; BELIEF REVISION</span>
+            <div>
+                <span class="status-pill success">{escape(source_type)}</span>
+                <span class="status-pill neutral">{escape(trust_level)}</span>
+            </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; margin-bottom: 0.4rem;">
+            <div>
+                <div class="micro-label">VALID TIME (APPLIES TO SCIENCE)</div>
+                <div class="mono-text" style="font-size: 0.76rem; color: #22C55E; font-weight: 500;">{escape(val_str)}</div>
+                {prior_html}
+            </div>
+            <div>
+                <div class="micro-label">RECORDED TIME (SYSTEM AS-OF)</div>
+                <div class="mono-text" style="font-size: 0.76rem; color: #F3F4F6;">{escape(rec_str)}</div>
+                <div style="font-size: 0.72rem; color: #8C929D; margin-top: 2px;">Evidence ID: <code class="mono-text">{escape(ev_id)}</code></div>
+            </div>
+        </div>
+        <div style="font-size: 0.75rem; color: #8C929D; border-top: 1px solid #1D2128; padding-top: 0.35rem;">
+            <strong style="color: #ADB1B8;">Context:</strong> {escape(ev_summary)}
+        </div>
+    </div>
+    """
+    st.markdown(evidence_block_html, unsafe_allow_html=True)
 
-    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    # 3. Key Figures Row (em dash '—' when unavailable, never 0 unless genuinely 0)
+    exp_cnt = len(impact_data["experiments"]) if (impact_data is not None and "experiments" in impact_data) else None
+    ds_cnt = len(impact_data["datasets"]) if (impact_data is not None and "datasets" in impact_data) else None
+    rpt_cnt = len(impact_data["reports"]) if (impact_data is not None and "reports" in impact_data) else None
+    tsk_cnt = len(recon.tasks) if recon.tasks is not None else None
 
-    # Vertical Timeline Stepper
-    with st.expander(f"Incident Event Timeline ({len(recon.events)} events)", expanded=True):
-        if not recon.events:
-            st.info("No episodic events recorded for this incident.")
+    exp_str = str(exp_cnt) if exp_cnt is not None else "—"
+    ds_str = str(ds_cnt) if ds_cnt is not None else "—"
+    rpt_str = str(rpt_cnt) if rpt_cnt is not None else "—"
+    tsk_str = str(tsk_cnt) if tsk_cnt is not None else "—"
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Affected Experiments", exp_str)
+    k2.metric("Affected Datasets", ds_str)
+    k3.metric("Downstream Reports", rpt_str)
+    k4.metric("Incident Tasks", tsk_str)
+
+    # 4. Major Outcomes Row (Quarantine counts/IDs, held reports, task escalations, procedure status)
+    quarantined_ids: list[str] = []
+    if impact_data and "datasets" in impact_data:
+        quarantined_ids = [d["id"] for d in impact_data["datasets"] if d.get("current_status") == "QUARANTINED"]
+    if not quarantined_ids and recon.action_records:
+        quarantined_ids = [a["target_id"] for a in recon.action_records if a.get("action_type") == "QUARANTINE_DATASET" and a.get("target_id")]
+    q_str = f"{len(quarantined_ids)} quarantined ({', '.join(quarantined_ids)})" if quarantined_ids else "0 quarantined"
+
+    held_rpt_ids: list[str] = []
+    if impact_data and "reports" in impact_data:
+        held_rpt_ids = [r["id"] for r in impact_data["reports"] if r.get("current_status") in ("HELD", "REQUIRES_REVIEW")]
+    if not held_rpt_ids and recon.action_records:
+        held_rpt_ids = [a["target_id"] for a in recon.action_records if a.get("action_type") in ("HOLD_REPORT", "FLAG_REPORT_REVIEW") and a.get("target_id")]
+    r_str = f"{len(held_rpt_ids)} held ({', '.join(held_rpt_ids)})" if held_rpt_ids else "0 held"
+
+    escalated = [t for t in (recon.tasks or []) if t.get("status") == "ESCALATED"]
+    if escalated:
+        reasons = list(dict.fromkeys(t.get("escalation_reason", "") for t in escalated if t.get("escalation_reason")))
+        reason_label = reasons[0] if reasons else "missing owner"
+        if len(reason_label) > 28:
+            reason_label = reason_label[:25] + "..."
+        t_str = f"{len(escalated)} escalated ({reason_label})"
+    else:
+        t_str = "0 escalated"
+
+    pb = playbook_data.get("playbook") if playbook_data else None
+    run = playbook_data.get("run") if playbook_data else None
+    mode_str = run.get("mode") if run else ("EXPLORATORY" if recon.incident_id == "INC-2026-001" else "VERIFIED")
+    p_status = (pb and pb.get("status")) or "VERIFIED"
+    proc_str = f"{p_status} ({mode_str})"
+
+    outcomes_html = f"""
+    <div style="border: 1px solid #1D2128; background-color: #111419; padding: 0.65rem 0.85rem; border-radius: 4px; margin: 0.6rem 0;">
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; font-size: 0.74rem;">
+            <div>
+                <div class="micro-label">QUARANTINE ENFORCEMENT</div>
+                <div class="mono-text" style="color: #F95738; font-weight: 500;">{escape(q_str)}</div>
+            </div>
+            <div>
+                <div class="micro-label">PUBLICATION GATE HOLD</div>
+                <div class="mono-text" style="color: #F95738; font-weight: 500;">{escape(r_str)}</div>
+            </div>
+            <div>
+                <div class="micro-label">TASK ESCALATIONS</div>
+                <div class="mono-text" style="color: #F59E0B; font-weight: 500;">{escape(t_str)}</div>
+            </div>
+            <div>
+                <div class="micro-label">PROCEDURE STATUS</div>
+                <div class="mono-text" style="color: #22C55E; font-weight: 500;">{escape(proc_str)}</div>
+            </div>
+        </div>
+    </div>
+    """
+    st.markdown(outcomes_html, unsafe_allow_html=True)
+
+    # 5. Incident Journey Graph (Pure domain computation, Graphviz DOT, layout toggle)
+    handoff_task_types = {
+        h["id"]: h.get("task_type")
+        for h in (recon.handoffs or [])
+        if isinstance(h, dict) and h.get("id") and h.get("task_type")
+    }
+    journey = build_journey(recon.events, handoff_task_types)
+
+    col_j_title, col_j_toggle = st.columns([3, 1])
+    with col_j_title:
+        st.markdown(
+            '<div class="micro-label" style="margin-top: 0.6rem; letter-spacing: 0.08em;">'
+            'INCIDENT JOURNEY GRAPH (7 CANONICAL STAGES)'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    with col_j_toggle:
+        is_vert = st.toggle("Vertical layout", value=False, key=f"tog_vert_{recon.incident_id}")
+
+    present_keys = [s.key for s in journey.present_stages]
+    session_stage_key = f"sel_stage_{recon.incident_id}"
+    if session_stage_key not in st.session_state or st.session_state[session_stage_key] not in present_keys:
+        st.session_state[session_stage_key] = present_keys[0] if present_keys else None
+
+    current_stage_key = st.session_state[session_stage_key]
+    orientation = "TB" if is_vert else "LR"
+    dot_str = build_journey_dot(journey, selected_stage_key=current_stage_key, orientation=orientation)
+    st.graphviz_chart(dot_str, use_container_width=True)
+    st.caption("Solid borders = recorded stages. Dashed borders = [NOT RECORDED] in this incident. Edges denote recorded sequence, not causation.")
+
+    # 6. Stage Selection & Stage Detail Panel
+    if present_keys:
+        key_to_stage = {s.key: s for s in journey.stages}
+
+        def stage_format(k: str) -> str:
+            stg = key_to_stage.get(k)
+            return f"{stg.label} ({stg.event_count})" if stg else k
+
+        sel = st.segmented_control(
+            "Select Stage to Inspect",
+            options=present_keys,
+            default=current_stage_key if current_stage_key in present_keys else present_keys[0],
+            format_func=stage_format,
+            key=f"stage_segmented_{recon.incident_id}",
+        )
+        if sel and sel != st.session_state[session_stage_key]:
+            st.session_state[session_stage_key] = sel
+            st.rerun()
+
+        active_stage = key_to_stage.get(st.session_state[session_stage_key])
+        if active_stage:
+            status_b = badge_html(active_stage.status)
+            interleave_text = ' &bull; <span style="color: #F59E0B; font-weight: 500;">⚠️ Interleaved sequence</span>' if active_stage.interleaved else ""
+            time_info = ""
+            if active_stage.first_time:
+                t1 = format_timestamp(active_stage.first_time, include_ist=False)
+                t2 = format_timestamp(active_stage.last_time, include_ist=False)
+                time_info = f" &bull; {t1} &rarr; {t2}"
+
+            st.markdown(
+                f"""
+                <div style="border: 1px solid #1D2128; background-color: #111419; padding: 0.75rem 0.9rem; border-radius: 4px; margin-top: 0.4rem; margin-bottom: 0.6rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <span class="mono-text" style="font-size: 0.85rem; font-weight: 600; color: #FFFFFF;">{escape(active_stage.label)}</span>
+                            <span style="margin-left: 0.5rem;">{status_b}</span>
+                        </div>
+                        <div class="mono-text" style="font-size: 0.75rem; color: #8C929D;">
+                            Seq #{active_stage.first_seq} &rarr; #{active_stage.last_seq}{interleave_text}
+                        </div>
+                    </div>
+                    <div style="font-size: 0.73rem; color: #8C929D; margin-top: 0.25rem;">
+                        <strong>Actors:</strong> {escape(', '.join(active_stage.actors) or 'System')}
+                        {time_info}
+                        &bull; <strong>Events:</strong> {active_stage.event_count}
+                        &bull; <strong>Supporting Queries:</strong> {active_stage.query_count}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # Stage key events table
+            if active_stage.events:
+                st_rows = []
+                for ev in active_stage.events:
+                    at_v = getattr(ev, "at", None) if not isinstance(ev, dict) else ev.get("at")
+                    act_v = getattr(ev, "actor_agent", None) if not isinstance(ev, dict) else ev.get("actor_agent")
+                    tp_v = getattr(ev, "event_type", None) if not isinstance(ev, dict) else ev.get("event_type")
+                    sm_v = getattr(ev, "summary", None) if not isinstance(ev, dict) else ev.get("summary")
+                    oc_v = getattr(ev, "outcome", None) if not isinstance(ev, dict) else ev.get("outcome")
+                    sq_v = getattr(ev, "seq", None) if not isinstance(ev, dict) else ev.get("seq")
+
+                    st_rows.append({
+                        "Seq": sq_v,
+                        "Time (UTC)": format_timestamp(at_v, include_ist=False),
+                        "Type": tp_v,
+                        "Actor": act_v or "System",
+                        "Summary": sanitize_dynamic_text(sm_v),
+                        "Outcome": oc_v or "—",
+                    })
+                st.dataframe(st_rows, use_container_width=True, hide_index=True)
+
+            # Supporting queries for this stage (explicitly linked)
+            if active_stage.supporting_queries:
+                with st.expander(f"Supporting Domain Queries ({len(active_stage.supporting_queries)})", expanded=False):
+                    q_rows = []
+                    for qe in active_stage.supporting_queries:
+                        payload = extract_payload(qe)
+                        q_rows.append({
+                            "Seq": getattr(qe, "seq", None) if not isinstance(qe, dict) else qe.get("seq"),
+                            "Query": payload.get("query_name") or "QUERY",
+                            "Rows": payload.get("result_count", 0),
+                            "Elapsed (ms)": f"{payload.get('elapsed_ms', 0):.1f}",
+                            "Params": ", ".join(payload.get("param_keys", [])),
+                        })
+                    st.dataframe(q_rows, use_container_width=True, hide_index=True)
+
+    # 7. Collapsed Full Audit Trail Expander
+    with st.expander(
+        f"Full Audit Trail ({journey.all_events_count} total events, {journey.supporting_queries_count} supporting queries)",
+        expanded=False,
+    ):
+        all_sorted = sorted(
+            recon.events,
+            key=lambda e: getattr(e, "seq", 0) if not isinstance(e, dict) else e.get("seq", 0),
+        )
+        trail_rows = []
+        for ev in all_sorted:
+            at_v = getattr(ev, "at", None) if not isinstance(ev, dict) else ev.get("at")
+            act_v = getattr(ev, "actor_agent", None) if not isinstance(ev, dict) else ev.get("actor_agent")
+            tp_v = getattr(ev, "event_type", None) if not isinstance(ev, dict) else ev.get("event_type")
+            sm_v = getattr(ev, "summary", None) if not isinstance(ev, dict) else ev.get("summary")
+            oc_v = getattr(ev, "outcome", None) if not isinstance(ev, dict) else ev.get("outcome")
+            sq_v = getattr(ev, "seq", None) if not isinstance(ev, dict) else ev.get("seq")
+
+            trail_rows.append({
+                "Seq": sq_v,
+                "Time (UTC)": format_timestamp(at_v, include_ist=False),
+                "Type": tp_v,
+                "Actor": act_v or "System",
+                "Summary": sanitize_dynamic_text(sm_v),
+                "Outcome": oc_v or "—",
+            })
+        if trail_rows:
+            st.dataframe(trail_rows, use_container_width=True, hide_index=True)
         else:
-            st.markdown(build_timeline_html(recon.events), unsafe_allow_html=True)
-
-    # Incident Tasks List
-    if recon.tasks:
-        with st.expander(f"Incident Tasks ({len(recon.tasks)})", expanded=False):
-            tasks_data = []
-            for t in recon.tasks:
-                assignee = t.get("assignee_name") or t.get("assignee_id") or "UNASSIGNED"
-                tasks_data.append({
-                    "Task ID": t.get("task_id") or t.get("id"),
-                    "Target": t.get("target_id"),
-                    "Type": t.get("task_type"),
-                    "Status": t.get("status"),
-                    "Assignee": assignee,
-                    "Escalation Reason": t.get("escalation_reason") or "—",
-                })
-            st.dataframe(tasks_data, use_container_width=True, hide_index=True)
+            st.info("No episodic events recorded for this incident.")
 
 
 def render_section_2_impact(
@@ -373,28 +636,24 @@ def render_section_3_memory(
         ("PC6", "PC6_ESCALATION_ON_NO_OWNER", "Missing owners escalated with explicit reason"),
     ]
 
-    p_cols = st.columns(3)
-    p_cols_2 = st.columns(3)
-    all_p_cols = list(p_cols) + list(p_cols_2)
-
-    for i, (pc_code, pc_key, pc_desc) in enumerate(pc_definitions):
-        col = all_p_cols[i]
-        with col:
-            check_obj = promotion_checks.get(pc_key) if promotion_checks else None
-            is_passed = check_obj.get("passed", True) if check_obj else True
-            badge = '<span class="status-pill success">PASS</span>' if is_passed else '<span class="status-pill danger">FAIL</span>'
-            col.markdown(
-                f"""
-                <div style="border: 1px solid #26292D; background-color: #151719; padding: 0.5rem; margin-bottom: 0.5rem; border-radius: 2px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span class="mono-text" style="font-weight: 600; font-size: 0.75rem;">{pc_code}</span>
-                        {badge}
-                    </div>
-                    <div style="font-size: 0.72rem; color: #8A9099; margin-top: 0.25rem;">{escape(pc_desc)}</div>
+    checklist_rows_html = []
+    for pc_code, pc_key, pc_desc in pc_definitions:
+        check_obj = promotion_checks.get(pc_key) if promotion_checks else None
+        is_passed = check_obj.get("passed", True) if check_obj else True
+        badge = '<span class="status-pill success">&#10003; PASS</span>' if is_passed else '<span class="status-pill danger">&#10005; FAIL</span>'
+        checklist_rows_html.append(
+            f"""
+            <div class="compliance-row">
+                <div class="compliance-info">
+                    <span class="compliance-code">{pc_code} &bull; <span style="font-weight: 400; color: #ADB1B8;">{escape(pc_desc)}</span></span>
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                <div>
+                    {badge}
+                </div>
+            </div>
+            """
+        )
+    st.markdown("".join(checklist_rows_html), unsafe_allow_html=True)
 
     # Playbook Steps / Step Results Table
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
@@ -555,8 +814,8 @@ def render_section_4_gate(
 
     # Honest CTA Action Block with explicit confirmation
     st.markdown(
-        '<div style="border: 1px solid #26292D; background-color: #151719; padding: 1rem; border-radius: 2px;">'
-        '<div style="font-size: 0.75rem; color: #8A9099; margin-bottom: 0.6rem;">'
+        '<div style="border: 1px solid #1D2128; background-color: #111419; padding: 0.85rem 1rem; border-radius: 4px;">'
+        '<div style="font-size: 0.75rem; color: #8C929D; margin-bottom: 0.6rem; line-height: 1.4;">'
         'ACTION: Attempting publication will execute live bitemporal coverage re-evaluation in FalkorDB '
         'and persist an immutable <code>PublicationAttempt</code> audit record.'
         '</div>'
@@ -605,16 +864,16 @@ def render_section_4_gate(
                 </div>
                 <div style="text-align: right;">
                     <div class="micro-label">REPORT TRANSITION</div>
-                    <div class="mono-text" style="font-size: 0.85rem; color: #E6E8EA;">
+                    <div class="mono-text" style="font-size: 0.85rem; color: #FFFFFF;">
                         {escape(last_res.prior_status)} &rarr; <strong>{escape(last_res.new_status)}</strong>
                     </div>
                 </div>
             </div>
             <div style="margin-bottom: 0.5rem;">
                 <div class="micro-label">JUSTIFICATION</div>
-                <div style="font-size: 0.85rem; color: #E6E8EA; line-height: 1.4;">{escape(last_res.reason)}</div>
+                <div style="font-size: 0.85rem; color: #F3F4F6; line-height: 1.4;">{escape(last_res.reason)}</div>
             </div>
-            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.72rem; color: #8A9099; border-top: 1px solid #26292D; padding-top: 0.4rem; margin-top: 0.5rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.72rem; color: #8C929D; border-top: 1px solid #1D2128; padding-top: 0.4rem; margin-top: 0.5rem;">
                 <span>ACTOR: <code class="mono-text">{escape(last_res.actor)}</code></span>
                 <span>ATTEMPT ID: <code class="mono-text">{escape(last_res.attempt_id)}</code></span>
                 <span>{escape(time_str)}</span>

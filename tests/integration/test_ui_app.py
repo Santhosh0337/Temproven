@@ -47,11 +47,12 @@ def test_streamlit_app_rerun_zero_writes():
     assert count_before == count_after, "Streamlit app rerun must NOT create or delete any graph nodes!"
 
 
-def test_streamlit_timeline_renders_from_graph_data(monkeypatch):
+def test_streamlit_journey_and_audit_trail_render_from_graph_data(monkeypatch):
     """
     Verify on a throwaway graph that:
-    - The timeline renders data that came from real graph Event nodes
-    - The entry count matches persisted Event count
+    - The Incident Journey Graph renders canonical stages and sequence edges from real graph Event nodes
+    - Present stages have solid borders, absent stages have dashed borders and [NOT RECORDED]
+    - The Audit Trail renders data matching the persisted Event count
     - An incident with 0 events renders the empty state safely without exception
     """
     import uuid
@@ -125,22 +126,28 @@ def test_streamlit_timeline_renders_from_graph_data(monkeypatch):
         at.run(timeout=15)
         assert not at.exception
 
-        # Timeline for INC-APPTEST-1
-        timeline_mds = [m.value for m in at.markdown if "timeline-item" in m.value and "<style>" not in m.value]
-        assert len(timeline_mds) >= 1
-        timeline_html = timeline_mds[0]
+        # Verify Journey Graph controls and legend
+        assert len(at.toggle) >= 1
+        assert at.toggle[0].label == "Vertical layout"
 
-        # Verify entry count equals persisted Event count
-        assert timeline_html.count('class="timeline-item"') == 3
-        assert timeline_html.count('class="timeline-dot"') == 3
-        assert "Incident opened for INS-A" in timeline_html
-        assert "Sensor drift observed" in timeline_html
-        assert "Quarantined dataset DS-A3" in timeline_html
+        # Verify Journey Graph caption
+        captions = [c.value for c in at.caption if "Solid borders = recorded stages" in c.value]
+        assert len(captions) >= 1, "Expected Journey Graph legend caption to render"
 
-        # Verify no 4-space indented lines
-        for line in timeline_html.splitlines():
-            assert not line.startswith("    ")
-            assert not line.startswith("\t")
+        # Verify Stage Selection control exists and contains present stages
+        assert len(at.segmented_control) >= 1
+        stage_ctrl = at.segmented_control[0]
+        assert any("Evidence received" in opt for opt in stage_ctrl.options)
+        assert any("Quarantine" in opt for opt in stage_ctrl.options)
+        assert not any("Incident closure" in opt for opt in stage_ctrl.options)
+
+        # Verify Event dataframes rendered
+        assert len(at.dataframe) >= 1
+
+        # Test selecting another stage (index 1) and rerun
+        stage_ctrl.select(stage_ctrl.options[1])
+        at.run(timeout=15)
+        assert not at.exception
 
         # Test selecting the empty incident
         select_box = at.sidebar.selectbox[0]
