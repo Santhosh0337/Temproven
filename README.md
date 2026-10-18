@@ -475,8 +475,8 @@ The participant reviewed and tested the implementation and is responsible for un
 
 ## Demo
 
-Demo video: Add the accessible demo video URL before submission.
-
+Demo video: https://youtu.be/wbsdmBwydu8
+ 
 ---
 
 ## Repository
