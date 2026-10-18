@@ -64,8 +64,8 @@ def render_event_inspector(
     summary_text = getattr(point, "summary", "") or "No summary provided."
     st.text(summary_text)
 
-    # 3. Labeled metadata grid (4 columns)
-    c1, c2, c3, c4 = st.columns(4)
+    # 3. Labeled metadata grid (4 columns, wider column 3 for timestamp)
+    c1, c2, c3, c4 = st.columns([1, 1, 1.25, 1])
     with c1:
         st.caption("EVENT TYPE & ID")
         ev_type = getattr(point, "event_type", "n/a") or "n/a"
@@ -81,7 +81,7 @@ def render_event_inspector(
         st.caption("RECORDED TIME (TRANSACTION)")
         t_utc = getattr(point, "timestamp_utc", "n/a") or "n/a"
         t_ist = getattr(point, "timestamp_ist", "n/a") or "n/a"
-        st.code(f"{t_utc}\n{t_ist}", language=None)
+        st.code(f"UTC: {t_utc}\nIST: {t_ist}", language=None)
     with c4:
         st.caption("STEP / TASK TYPE & REFS")
         step_type = getattr(point, "step_type", "n/a") or "n/a"

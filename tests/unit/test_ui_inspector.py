@@ -76,6 +76,7 @@ def test_inspector_selected_point_renders_native_components():
     assert any("PLAYBOOK_STEP" in c for c in code_values)
     assert any("VerificationAgent" in c for c in code_values)
     assert any("CHECK_LINEAGE" in c for c in code_values)
+    assert any("UTC: 2026-10-18 10:00:00 UTC\nIST: 15:30:00 IST" in c for c in code_values)
 
     # Expander for raw payload
     assert len(at.expander) >= 1
@@ -161,3 +162,49 @@ def test_inspector_static_safety_guards():
     assert "unsafe_allow_html" not in code
     html_pattern = re.compile(r"<\s*(div|span|table|tr|td|th|p|b|i|strong|em|h[1-6]|ul|ol|li)\b", re.IGNORECASE)
     assert not html_pattern.search(code)
+
+
+def test_inspector_timestamp_separate_labeled_lines_and_proportions():
+    """Inspector renders UTC and IST on separate labeled lines and configures 4 columns with [1, 1, 1.25, 1]."""
+    inspector_file = Path(__file__).resolve().parents[2] / "temproven" / "app" / "inspector.py"
+    code = inspector_file.read_text(encoding="utf-8")
+
+    # Column proportions check
+    assert "c1, c2, c3, c4 = st.columns([1, 1, 1.25, 1])" in code
+    # Timestamp formatting code check
+    assert 'st.code(f"UTC: {t_utc}\\nIST: {t_ist}", language=None)' in code
+
+
+def test_inspector_missing_and_long_timestamps():
+    """Missing or None timestamps fall back cleanly to 'n/a' and long timestamps don't crash."""
+    def script():
+        from dataclasses import dataclass
+        from temproven.app.inspector import render_event_inspector
+
+        @dataclass
+        class MockPointMissingTime:
+            seq: int = 10
+            category: str = "Evidence received"
+            significance: str = "SIGNIFICANT"
+            outcome: str = "n/a"
+            summary: str = "Event with missing timestamps"
+            event_type: str = "EVIDENCE_INGESTED"
+            event_id: str = "ev-10"
+            actor: str = "system"
+            target_id: str = "n/a"
+            timestamp_utc: str = None
+            timestamp_ist: str = None
+            step_type: str = "n/a"
+            task_type: str = "n/a"
+            evidence_ids: list = None
+            action_ids: list = None
+            payload: dict = None
+
+        render_event_inspector(MockPointMissingTime())
+
+    at = AppTest.from_function(script)
+    at.run()
+    assert not at.exception
+    code_values = [c.value for c in at.code]
+    assert any("UTC: n/a\nIST: n/a" in c for c in code_values)
+

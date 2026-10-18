@@ -27,6 +27,8 @@ from temproven.app.timeline import (
     resolve_selected_seq,
     build_timeline_chart,
     truncate_summary_for_tooltip,
+    format_epoch_utc,
+    format_epoch_ist,
 )
 
 
@@ -270,3 +272,21 @@ def test_empty_incident_and_many_events():
     assert large_view.total_count == 249
     large_chart = build_timeline_chart(large_view, orientation="vertical")
     assert large_chart.to_dict() is not None
+
+
+def test_format_epoch_ist_standalone():
+    """Verify format_epoch_ist outputs clean, standalone IST string without parenthetical UTC duplicate."""
+    # Valid epoch
+    ist_str = format_epoch_ist(1792227600)
+    assert ist_str == "2026-10-17 14:30:00 IST"
+    assert "UTC" not in ist_str
+    assert "(" not in ist_str
+    assert ")" not in ist_str
+
+    # Zero or None yields "n/a"
+    assert format_epoch_ist(0) == "n/a"
+    assert format_epoch_ist(None) == "n/a"
+
+    # Invalid string/overflow handled safely
+    assert "invalid epoch" in format_epoch_ist("not_an_epoch")
+

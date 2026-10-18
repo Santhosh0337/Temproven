@@ -29,7 +29,7 @@ from temproven.app.journey import (
     HANDOFF_TASK_STAGE_MAP,
     DECISION_STAGE_MAP,
 )
-from temproven.app.presenters import escape, format_timestamp
+from temproven.app.presenters import escape, format_timestamp, format_epoch_ist
 
 
 # ── Canonical Display Categories ──────────────────────────────────────────────
@@ -217,6 +217,7 @@ def format_epoch_utc(epoch_sec: int | None) -> str:
         return "n/a"
 
 
+
 def truncate_summary_for_tooltip(summary: str, max_chars: int = 120) -> str:
     """Safely cap summary at max_chars with an ellipsis for tooltips."""
     if not summary:
@@ -319,7 +320,7 @@ def build_timeline_points(
             actor=str(actor),
             timestamp_epoch=raw_at or 0,
             timestamp_utc=format_epoch_utc(raw_at),
-            timestamp_ist=format_timestamp(raw_at, include_ist=True),
+            timestamp_ist=format_epoch_ist(raw_at),
             summary=summary,
             tooltip_summary=truncate_summary_for_tooltip(summary),
             outcome=str(outcome_str),

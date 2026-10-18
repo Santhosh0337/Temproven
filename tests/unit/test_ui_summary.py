@@ -25,14 +25,19 @@ import pytest
 from temproven.app.summary import (
     ClosureRepresentation,
     IncidentReportRestrictions,
+    IncidentTasksSummary,
     LeadAnswers,
     Milestone,
+    OrderedStepResult,
+    PlaybookRunSummary,
     ReportRestrictionDetail,
     _plural,
     build_investigation_lead,
     build_investigation_summary,
+    build_ordered_step_results,
     describe_incident_closure,
     describe_incident_report_restrictions,
+    describe_incident_tasks,
     describe_single_report_restriction,
 )
 
@@ -279,6 +284,51 @@ def test_milestones_derivation_reuse_with_m3b():
     assert m3b.status == "RECORDED"
     assert "step 1 differed" in m3b.statement.lower()
     assert "steps 2 and 3 passed" in m3b.statement.lower()
+
+
+def test_milestone_m3b_uses_stored_step_order_not_list_position():
+    """
+    REPRODUCTION TEST FOR OUTCOME A (PLAYBOOK STEP ORDERING BUG):
+    When StepResults arrive in arbitrary/reverse order (e.g. 7..1 from Cypher collect):
+    1. Steps MUST be mapped to PlaybookStep.order, NEVER enumerate index over list position.
+    2. Step 1 (DIFFERED), Step 2 (DIFFERED), Step 3 (DIFFERED), Step 4 (PASSED),
+       Step 5 (PASSED), Step 6 (DIFFERED), Step 7 (PASSED).
+    3. The statement MUST state: 'Steps 1, 2, 3 and 6 differed from the verified procedure; steps 4, 5 and 7 passed.'
+       (Under the bug, it states 'Steps 2, 5, 6 and 7 differed... steps 1, 3 and 4 passed.')
+    """
+    recon = MockReconstruction(
+        incident_id="inc-reuse-7step",
+        status="CLOSED",
+    )
+    # 7 structured PlaybookSteps in order 1..7
+    steps = [
+        {"id": f"step_{i}", "order": i, "step_type": f"TYPE_{i}"}
+        for i in range(1, 8)
+    ]
+    # StepResults in REVERSE order (7 down to 1), exactly as FalkorDB collect returned
+    # Differed: steps 1, 2, 3, 6; Passed: steps 4, 5, 7
+    status_map = {1: "DIFFERED", 2: "DIFFERED", 3: "DIFFERED", 4: "PASSED", 5: "PASSED", 6: "DIFFERED", 7: "PASSED"}
+    reversed_step_results = [
+        {"id": f"sr_{i}", "step_id": f"step_{i}", "status": status_map[i]}
+        for i in range(7, 0, -1)
+    ]
+
+    playbook_data = {
+        "playbook": {"id": "pb-1", "status": "VERIFIED"},
+        "steps": steps,
+        "run": {
+            "id": "run-001",
+            "mode": "VERIFIED_REUSE",
+            "step_results": reversed_step_results,
+        },
+        "step_results": reversed_step_results,
+    }
+
+    milestones = build_investigation_summary(recon, playbook_data=playbook_data)
+    m3b = next(m for m in milestones if m.key == "M3b")
+
+    assert "Steps 1, 2, 3 and 6 differed" in m3b.statement
+    assert "steps 4, 5 and 7 passed" in m3b.statement
 
 
 def test_unclosed_incident_does_not_show_closure():
@@ -641,4 +691,183 @@ def test_describe_incident_report_restrictions_aggregation():
     assert r5.outcome_strip_label == "0 restricted"
     assert r5.lead_action_text == ""
     assert r5.milestone_statement == "Report restrictions were not recorded for this incident."
+
+
+def test_build_ordered_step_results_comprehensive():
+    """
+    Comprehensive tests for build_ordered_step_results:
+    1. Handles arbitrary/shuffled/reversed StepResults input correctly sorted by stored order.
+    2. Handles missing steps, None, or empty input gracefully without errors.
+    3. Milestone statement grammar:
+       - Single differed, multiple passed.
+       - Multiple differed, single passed.
+       - All passed.
+       - All differed.
+    4. Two distinct playbooks / runs remain isolated without state leak.
+    """
+    # 1. Shuffled step results sorted strictly by PlaybookStep.order
+    steps = [
+        {"id": "step_c", "order": 3, "step_type": "CHECK_LINEAGE", "kind": "READ", "role": "CONFIRM"},
+        {"id": "step_a", "order": 1, "step_type": "CONFIRM_LAPSE", "kind": "READ", "role": "CONFIRM"},
+        {"id": "step_d", "order": 4, "step_type": "QUARANTINE_DATA", "kind": "WRITE", "role": "REMEDIATE"},
+        {"id": "step_b", "order": 2, "step_type": "TRACE_DEPENDENTS", "kind": "READ", "role": "CONFIRM"},
+    ]
+    # In randomized order
+    shuffled_results = [
+        {"id": "res_d", "step_id": "step_d", "status": "PASSED"},
+        {"id": "res_a", "step_id": "step_a", "status": "DIFFERED"},
+        {"id": "res_c", "step_id": "step_c", "status": "PASSED"},
+        {"id": "res_b", "step_id": "step_b", "status": "DIFFERED"},
+    ]
+    pb_data = {
+        "steps": steps,
+        "step_results": shuffled_results,
+    }
+    summary = build_ordered_step_results(pb_data)
+    assert summary.has_results is True
+    assert [s.step_number for s in summary.ordered_steps] == [1, 2, 3, 4]
+    assert [s.step_id for s in summary.ordered_steps] == ["step_a", "step_b", "step_c", "step_d"]
+    assert summary.differed_step_numbers == [1, 2]
+    assert summary.passed_step_numbers == [3, 4]
+    assert summary.milestone_statement == "Steps 1 and 2 differed from the verified procedure; steps 3 and 4 passed."
+
+    # 2. Single differed, multiple passed
+    res_single_diff = [
+        {"step_id": "step_a", "status": "PASSED"},
+        {"step_id": "step_b", "status": "DIFFERED"},
+        {"step_id": "step_c", "status": "PASSED"},
+        {"step_id": "step_d", "status": "PASSED"},
+    ]
+    summary_sd = build_ordered_step_results({"steps": steps, "step_results": res_single_diff})
+    assert summary_sd.milestone_statement == "Step 2 differed from the verified procedure; steps 1, 3 and 4 passed."
+
+    # 3. Multiple differed, single passed
+    res_single_pass = [
+        {"step_id": "step_a", "status": "DIFFERED"},
+        {"step_id": "step_b", "status": "DIFFERED"},
+        {"step_id": "step_c", "status": "PASSED"},
+        {"step_id": "step_d", "status": "DIFFERED"},
+    ]
+    summary_sp = build_ordered_step_results({"steps": steps, "step_results": res_single_pass})
+    assert summary_sp.milestone_statement == "Steps 1, 2 and 4 differed from the verified procedure; step 3 passed."
+
+    # 4. All passed
+    res_all_pass = [
+        {"step_id": "step_a", "status": "PASSED"},
+        {"step_id": "step_b", "status": "PASSED"},
+        {"step_id": "step_c", "status": "PASSED"},
+        {"step_id": "step_d", "status": "PASSED"},
+    ]
+    summary_ap = build_ordered_step_results({"steps": steps, "step_results": res_all_pass})
+    assert summary_ap.milestone_statement == "All 4 steps passed in verified reuse (1, 2, 3 and 4)."
+
+    # 5. All differed
+    res_all_diff = [
+        {"step_id": "step_a", "status": "DIFFERED"},
+        {"step_id": "step_b", "status": "DIFFERED"},
+        {"step_id": "step_c", "status": "DIFFERED"},
+        {"step_id": "step_d", "status": "DIFFERED"},
+    ]
+    summary_ad = build_ordered_step_results({"steps": steps, "step_results": res_all_diff})
+    assert summary_ad.milestone_statement == "Steps 1, 2, 3 and 4 differed from the verified procedure."
+
+    # 6. Empty / None input
+    summary_empty = build_ordered_step_results(None)
+    assert summary_empty.has_results is False
+    assert summary_empty.ordered_steps == []
+    assert summary_empty.milestone_statement == ""
+
+    summary_no_results = build_ordered_step_results({"steps": steps, "step_results": []})
+    assert summary_no_results.has_results is False
+    assert len(summary_no_results.ordered_steps) == 4
+    assert summary_no_results.ordered_steps[0].status == "PENDING"
+    assert summary_no_results.milestone_statement == ""
+
+
+def test_describe_incident_tasks_comprehensive():
+    """
+    Comprehensive tests for describe_incident_tasks:
+    1. Count reconciliation: total == escalated + assigned + other.
+    2. Zero tasks returns honest 'not recorded' state.
+    3. All assigned tasks lists distinct assignees.
+    4. All escalated tasks safely escapes reasons and preserves counts.
+    5. Mixed tasks reconciles mutually exclusive categories.
+    6. Hostile injection in escalation reason is rendered inert without markup.
+    """
+    # 1. Zero tasks
+    t0 = describe_incident_tasks([])
+    assert t0.total_count == 0
+    assert t0.assigned_count == 0
+    assert t0.escalated_count == 0
+    assert t0.other_count == 0
+    assert t0.milestone_status == "NOT RECORDED"
+    assert t0.milestone_statement == "Investigation tasks were not recorded for this incident."
+    assert t0.lead_action_text == "no tasks recorded"
+
+    # None input
+    t_none = describe_incident_tasks(None)
+    assert t_none.total_count == 0
+    assert t_none.milestone_status == "NOT RECORDED"
+
+    # 2. All assigned tasks (like INC-2026-001 scenario without escalation)
+    tasks_assigned = [
+        {"task_id": "t1", "status": "ASSIGNED", "assignee_name": "Dr. Alice Chen"},
+        {"task_id": "t2", "status": "ASSIGNED", "assignee_name": "Dr. Bob Martinez"},
+        {"task_id": "t3", "status": "IN_PROGRESS", "assignee_id": "usr-003"},
+    ]
+    t_asgn = describe_incident_tasks(tasks_assigned)
+    assert t_asgn.total_count == 3
+    assert t_asgn.assigned_count == 3
+    assert t_asgn.escalated_count == 0
+    assert t_asgn.other_count == 0
+    assert t_asgn.milestone_status == "COMPLETED"
+    assert t_asgn.total_count == t_asgn.assigned_count + t_asgn.escalated_count + t_asgn.other_count
+    assert "Created 3 tasks: 3 assigned to owners." in t_asgn.milestone_statement
+    assert "3 review tasks created (3 assigned)" in t_asgn.lead_action_text
+
+    # 3. All escalated tasks (like INC-2026-002: 2 escalated with single distinct reason)
+    tasks_escalated = [
+        {"task_id": "t1", "status": "ESCALATED", "escalation_reason": "No owner found in graph"},
+        {"task_id": "t2", "status": "ESCALATED", "escalation_reason": "No owner found in graph"},
+    ]
+    t_esc = describe_incident_tasks(tasks_escalated)
+    assert t_esc.total_count == 2
+    assert t_esc.assigned_count == 0
+    assert t_esc.escalated_count == 2
+    assert t_esc.other_count == 0
+    assert t_esc.total_count == t_esc.assigned_count + t_esc.escalated_count + t_esc.other_count
+    assert t_esc.distinct_reasons == [("No owner found in graph", 2)]
+    assert "Created 2 tasks: 2 escalated (No owner found in graph)." in t_esc.milestone_statement
+    assert "2 review tasks created (2 escalated: No owner found in graph)" in t_esc.lead_action_text
+
+    # 4. Mixed tasks: 1 escalated, 2 assigned, 1 unassigned/pending
+    tasks_mixed = [
+        {"task_id": "t1", "status": "ASSIGNED", "assignee_name": "Dr. Alice Chen"},
+        {"task_id": "t2", "status": "ASSIGNED", "assignee_name": "Dr. Bob Martinez"},
+        {"task_id": "t3", "status": "ESCALATED", "escalation_reason": "Senior review required"},
+        {"task_id": "t4", "status": "PENDING"},
+    ]
+    t_mix = describe_incident_tasks(tasks_mixed)
+    assert t_mix.total_count == 4
+    assert t_mix.assigned_count == 2
+    assert t_mix.escalated_count == 1
+    assert t_mix.other_count == 1
+    assert t_mix.total_count == t_mix.assigned_count + t_mix.escalated_count + t_mix.other_count
+    assert "Created 4 tasks: 2 assigned to owners; 1 escalated (Senior review required); 1 other (PENDING)." in t_mix.milestone_statement
+    assert "4 review tasks created (2 assigned, 1 escalated: Senior review required, 1 other)" in t_mix.lead_action_text
+
+    # 5. Hostile injection in escalation reason
+    hostile_reason = "<script>alert('xss')</script> & <div style='color:red'>fail</div>"
+    tasks_hostile = [
+        {"task_id": "th1", "status": "ESCALATED", "escalation_reason": hostile_reason},
+    ]
+    t_hostile = describe_incident_tasks(tasks_hostile)
+    assert t_hostile.total_count == 1
+    assert t_hostile.escalated_count == 1
+    # Check that angle brackets are escaped into &lt; / &gt; or inert strings
+    assert "<script>" not in t_hostile.milestone_statement
+    assert "&lt;script&gt;" in t_hostile.milestone_statement
+    assert "<script>" not in t_hostile.lead_action_text
+    assert "&lt;script&gt;" in t_hostile.lead_action_text
+
 

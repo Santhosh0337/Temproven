@@ -38,8 +38,10 @@ from temproven.app.timeline import (
 )
 from temproven.app.presenters import (
     build_lineage_dot,
+    build_ordered_step_results,
     build_timeline_html,
     describe_incident_report_restrictions,
+    describe_incident_tasks,
     describe_single_report_restriction,
     escape,
     format_interval,
@@ -275,13 +277,13 @@ def render_section_1_overview(
     )
     r_str = r_restr.outcome_strip_label
 
-    escalated = [t for t in (recon.tasks or []) if t.get("status") == "ESCALATED"]
-    if escalated:
-        reasons = list(dict.fromkeys(t.get("escalation_reason", "") for t in escalated if t.get("escalation_reason")))
+    t_summary = describe_incident_tasks(recon.tasks)
+    if t_summary.escalated_count:
+        reasons = [r for r, _ in t_summary.distinct_reasons]
         reason_label = reasons[0] if reasons else "missing owner"
         if len(reason_label) > 28:
             reason_label = reason_label[:25] + "..."
-        t_str = f"{len(escalated)} escalated ({reason_label})"
+        t_str = f"{t_summary.escalated_count} escalated ({reason_label})"
     else:
         t_str = "0 escalated"
 
@@ -765,43 +767,18 @@ def render_section_3_memory(
     # Playbook Steps / Step Results Table
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
     with st.expander("Playbook Steps & Execution Results", expanded=True):
-        # Match step definition with run result
-        res_by_step = {r.get("step_id"): r for r in step_results}
+        pb_summary = build_ordered_step_results(playbook_data)
         table_rows = []
-
-        # If we have structured steps
-        if steps:
-            for s in steps:
-                s_id = s.get("id")
-                r = res_by_step.get(s_id, {})
-                status_str = r.get("status") or ("PASSED" if pb and pb.get("status") == "VERIFIED" else "PENDING")
-                diffs = r.get("differences_json") or "—"
-                if diffs and diffs != "—":
-                    try:
-                        parsed = json.loads(diffs)
-                        diffs = str(parsed)
-                    except Exception:
-                        pass
-
-                table_rows.append({
-                    "Step": s.get("order"),
-                    "Step ID": s_id,
-                    "Kind": s.get("kind"),
-                    "Role": s.get("role"),
-                    "Expected": s.get("expected_outcome") or "PASSED",
-                    "Status": status_str,
-                    "Differences": diffs,
-                })
-        elif step_results:
-            for r in step_results:
-                table_rows.append({
-                    "Step ID": r.get("step_id"),
-                    "Status": r.get("status"),
-                    "Detail": r.get("detail"),
-                    "Differences": r.get("differences_json") or "None",
-                    "Domain Queries": r.get("domain_query_count", 0),
-                    "Elapsed (ms)": f"{r.get('elapsed_ms', 0):.1f}",
-                })
+        for osr in pb_summary.ordered_steps:
+            table_rows.append({
+                "Step": osr.step_number,
+                "Step ID": osr.step_id,
+                "Kind": osr.kind,
+                "Role": osr.role,
+                "Expected": osr.expected,
+                "Status": osr.status,
+                "Differences": osr.differences,
+            })
 
         if table_rows:
             st.dataframe(table_rows, use_container_width=True, hide_index=True)

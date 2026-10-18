@@ -11,6 +11,8 @@ Pure presentation functions:
 from __future__ import annotations
 
 import html
+import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -116,6 +118,22 @@ def format_timestamp(
     dt_ist = dt_utc.astimezone(IST_OFFSET)
     ist_str = dt_ist.strftime("%H:%M:%S IST")
     return f"{utc_str} ({ist_str})"
+
+
+def format_epoch_ist(epoch: int | float | None) -> str:
+    """
+    Format an epoch second timestamp into a clean, standalone IST string:
+    '2026-10-17 17:30:00 IST' or 'n/a' if epoch is None/0.
+    Handles long/invalid/missing timestamps safely without markup.
+    """
+    if epoch is None or epoch == 0:
+        return "n/a"
+    try:
+        dt_utc = datetime.fromtimestamp(float(epoch), tz=timezone.utc)
+    except (ValueError, OSError, OverflowError):
+        return f"{epoch} (invalid epoch)"
+    dt_ist = dt_utc.astimezone(IST_OFFSET)
+    return dt_ist.strftime("%Y-%m-%d %H:%M:%S IST")
 
 
 def format_interval(
@@ -578,6 +596,273 @@ def describe_incident_report_restrictions(
     )
 
 
+@dataclass
+class OrderedStepResult:
+    step_number: int
+    step_id: str
+    step_type: str
+    kind: str
+    role: str
+    expected: str
+    status: str
+    differences: str
+    detail: str = ""
+    domain_query_count: int = 0
+    elapsed_ms: float = 0.0
+
+
+@dataclass
+class PlaybookRunSummary:
+    ordered_steps: list[OrderedStepResult]
+    differed_step_numbers: list[int]
+    passed_step_numbers: list[int]
+    milestone_statement: str
+    has_results: bool
+
+
+def _format_step_numbers(nums: list[int]) -> str:
+    """Format a list of step numbers with proper comma and 'and' conjunction."""
+    if not nums:
+        return "none"
+    if len(nums) == 1:
+        return str(nums[0])
+    if len(nums) == 2:
+        return f"{nums[0]} and {nums[1]}"
+    return ", ".join(map(str, nums[:-1])) + f" and {nums[-1]}"
+
+
+def build_ordered_step_results(playbook_data: dict[str, Any] | None) -> PlaybookRunSummary:
+    """
+    Derive canonical ordered step results and summary statement:
+    - Joins StepResults to PlaybookSteps by step_id.
+    - Numbers steps strictly by the stored PlaybookStep.order, NEVER list position.
+    - Ascending sort order guaranteed.
+    - Used identically by both Investigation Memory table and Milestone M3b.
+    """
+    if not playbook_data:
+        return PlaybookRunSummary(
+            ordered_steps=[],
+            differed_step_numbers=[],
+            passed_step_numbers=[],
+            milestone_statement="",
+            has_results=False,
+        )
+
+    steps = playbook_data.get("steps") or []
+    run = playbook_data.get("run")
+    step_results = playbook_data.get("step_results") or (run.get("step_results") if run else []) or []
+    pb = playbook_data.get("playbook") or {}
+    pb_status = pb.get("status")
+
+    res_by_step = {str(r.get("step_id")): r for r in step_results if r.get("step_id")}
+
+    ordered_steps: list[OrderedStepResult] = []
+
+    if steps:
+        sorted_steps = sorted(steps, key=lambda s: int(s.get("order") or 0))
+        for s in sorted_steps:
+            s_id = str(s.get("id") or "")
+            order_num = int(s.get("order") or 0)
+            r = res_by_step.get(s_id, {})
+            if r:
+                status_str = str(r.get("status") or "PENDING").upper()
+            else:
+                status_str = "PASSED" if pb_status == "VERIFIED" else "PENDING"
+
+            diffs = r.get("differences_json") or "—"
+            if diffs and diffs != "—":
+                try:
+                    parsed = json.loads(diffs)
+                    diffs = str(parsed)
+                except Exception:
+                    pass
+
+            ordered_steps.append(OrderedStepResult(
+                step_number=order_num,
+                step_id=s_id,
+                step_type=s.get("step_type") or "UNKNOWN",
+                kind=s.get("kind") or "READ",
+                role=s.get("role") or "CONFIRM",
+                expected=s.get("expected_outcome") or "PASSED",
+                status=status_str,
+                differences=diffs,
+                detail=r.get("detail", ""),
+                domain_query_count=r.get("domain_query_count", 0),
+                elapsed_ms=r.get("elapsed_ms", 0.0),
+            ))
+    elif step_results:
+        for idx, r in enumerate(step_results, 1):
+            s_id = str(r.get("step_id") or "")
+            order_num = idx
+            m = re.search(r"_(\d+)$", s_id)
+            if m:
+                order_num = int(m.group(1))
+            elif r.get("step_number") is not None:
+                order_num = int(r["step_number"])
+
+            ordered_steps.append(OrderedStepResult(
+                step_number=order_num,
+                step_id=s_id,
+                step_type=r.get("step_type") or "UNKNOWN",
+                kind="UNKNOWN",
+                role="UNKNOWN",
+                expected="PASSED",
+                status=str(r.get("status") or "PENDING").upper(),
+                differences=str(r.get("differences_json") or "None"),
+                detail=r.get("detail", ""),
+                domain_query_count=r.get("domain_query_count", 0),
+                elapsed_ms=r.get("elapsed_ms", 0.0),
+            ))
+        ordered_steps.sort(key=lambda x: x.step_number)
+
+    has_results = bool(step_results)
+
+    differed = [osr.step_number for osr in ordered_steps if osr.status == "DIFFERED"]
+    passed = [osr.step_number for osr in ordered_steps if osr.status == "PASSED"]
+
+    if has_results and (differed or passed):
+        diff_str = _format_step_numbers(differed)
+        pass_str = _format_step_numbers(passed)
+
+        if differed and passed:
+            diff_word = "Step" if len(differed) == 1 else "Steps"
+            pass_word = "step" if len(passed) == 1 else "steps"
+            stmt = f"{diff_word} {diff_str} differed from the verified procedure; {pass_word} {pass_str} passed."
+        elif differed and not passed:
+            diff_word = "Step" if len(differed) == 1 else "Steps"
+            stmt = f"{diff_word} {diff_str} differed from the verified procedure."
+        else:
+            pass_word = "step" if len(passed) == 1 else "steps"
+            stmt = f"All {len(passed)} {pass_word} passed in verified reuse ({pass_str})."
+    else:
+        stmt = ""
+
+    return PlaybookRunSummary(
+        ordered_steps=ordered_steps,
+        differed_step_numbers=differed,
+        passed_step_numbers=passed,
+        milestone_statement=stmt,
+        has_results=has_results,
+    )
+
+
+@dataclass
+class IncidentTasksSummary:
+    total_count: int
+    assigned_count: int
+    escalated_count: int
+    other_count: int
+    distinct_reasons: list[tuple[str, int]]
+    lead_action_text: str
+    milestone_statement: str
+    milestone_status: str
+
+
+def describe_incident_tasks(tasks: list[dict[str, Any]] | None) -> IncidentTasksSummary:
+    """
+    Derive mutually exclusive task classification, honest counts, and inert wording:
+    1. Escalated: status == 'ESCALATED' or has escalation_reason.
+    2. Assigned: has recorded assignee and not escalated.
+    3. Other: remaining tasks with status reported honestly.
+    Reconciles: total = escalated + assigned + other.
+    """
+    tasks = tasks or []
+    total = len(tasks)
+
+    if total == 0:
+        return IncidentTasksSummary(
+            total_count=0,
+            assigned_count=0,
+            escalated_count=0,
+            other_count=0,
+            distinct_reasons=[],
+            lead_action_text="no tasks recorded",
+            milestone_statement="Investigation tasks were not recorded for this incident.",
+            milestone_status="NOT RECORDED",
+        )
+
+    escalated_tasks: list[dict[str, Any]] = []
+    assigned_tasks: list[dict[str, Any]] = []
+    other_tasks: list[dict[str, Any]] = []
+
+    for t in tasks:
+        st = str(t.get("status") or "").upper()
+        reason = t.get("escalation_reason")
+        has_assignee = bool(t.get("assignee_name") or t.get("assignee_id") or t.get("assignee"))
+
+        if st == "ESCALATED" or (reason and str(reason).strip()):
+            escalated_tasks.append(t)
+        elif has_assignee:
+            assigned_tasks.append(t)
+        else:
+            other_tasks.append(t)
+
+    # Mutually exclusive reconciliation assertion
+    assert total == len(escalated_tasks) + len(assigned_tasks) + len(other_tasks), "Task counts must reconcile"
+
+    esc_cnt = len(escalated_tasks)
+    asgn_cnt = len(assigned_tasks)
+    oth_cnt = len(other_tasks)
+
+    # Extract distinct escalation reasons safely
+    reason_map: dict[str, int] = {}
+    for t in escalated_tasks:
+        raw_r = t.get("escalation_reason")
+        r_text = sanitize_dynamic_text(raw_r) if raw_r and str(raw_r).strip() else "no reason recorded"
+        reason_map[r_text] = reason_map.get(r_text, 0) + 1
+
+    distinct_reasons = list(reason_map.items())
+
+    # Format escalation reason text
+    if esc_cnt > 0:
+        if len(distinct_reasons) == 1:
+            r_str, _ = distinct_reasons[0]
+            esc_reason_clause = f" ({r_str})"
+            lead_reason_clause = f": {r_str}"
+        else:
+            r_parts = [f"{count} with reason: {r}" for r, count in distinct_reasons]
+            esc_reason_clause = f" ({'; '.join(r_parts)})"
+            lead_reason_clause = f": {'; '.join(r_parts)}"
+    else:
+        esc_reason_clause = ""
+        lead_reason_clause = ""
+
+    # Milestone statement
+    parts = []
+    if asgn_cnt > 0:
+        parts.append(f"{asgn_cnt} assigned to owners")
+    if esc_cnt > 0:
+        parts.append(f"{esc_cnt} escalated{esc_reason_clause}")
+    if oth_cnt > 0:
+        oth_statuses = [str(t.get("status") or "UNSPECIFIED").upper() for t in other_tasks]
+        parts.append(f"{oth_cnt} other ({', '.join(oth_statuses)})")
+
+    clause_str = "; ".join(parts)
+    milestone_stmt = f"Created {_plural(total, 'task')}: {clause_str}."
+
+    # Lead action text
+    lead_parts = []
+    if asgn_cnt > 0:
+        lead_parts.append(f"{asgn_cnt} assigned")
+    if esc_cnt > 0:
+        lead_parts.append(f"{esc_cnt} escalated{lead_reason_clause}")
+    if oth_cnt > 0:
+        lead_parts.append(f"{oth_cnt} other")
+
+    lead_text = f"{_plural(total, 'review task')} created ({', '.join(lead_parts)})"
+
+    return IncidentTasksSummary(
+        total_count=total,
+        assigned_count=asgn_cnt,
+        escalated_count=esc_cnt,
+        other_count=oth_cnt,
+        distinct_reasons=distinct_reasons,
+        lead_action_text=lead_text,
+        milestone_statement=milestone_stmt,
+        milestone_status="COMPLETED",
+    )
+
+
 def build_investigation_lead(
     recon: Any,
     impact_data: dict[str, Any] | None = None,
@@ -640,15 +925,15 @@ def build_investigation_lead(
         action_records=recon.action_records,
         reports_data=impact_data.get("reports", []) if impact_data else None,
     )
-    t_cnt = len(recon.tasks or [])
+    t_summary = describe_incident_tasks(recon.tasks)
 
     actions_parts = []
     if q_ids:
         actions_parts.append(f"{_plural(len(q_ids), 'dataset')} quarantined ({', '.join(q_ids)})")
     if r_restr.lead_action_text:
         actions_parts.append(r_restr.lead_action_text)
-    if t_cnt:
-        actions_parts.append(f"{_plural(t_cnt, 'review task')} created")
+    if t_summary.total_count:
+        actions_parts.append(t_summary.lead_action_text)
 
     if actions_parts:
         actions_taken = "; ".join(actions_parts).capitalize() + "."
@@ -809,33 +1094,15 @@ def build_investigation_summary(
     ))
 
     # ── M3b: Playbook execution differences (only when StepResults exist) ──
-    step_results = (playbook_data.get("step_results", []) if playbook_data else [])
-    if not step_results and run and run.get("step_results"):
-        step_results = run.get("step_results")
-
-    if step_results:
-        differed_steps: list[int] = []
-        passed_steps: list[int] = []
-        for idx, sr in enumerate(step_results, 1):
-            s_status = str(sr.get("status", "")).upper()
-            if s_status == "DIFFERED":
-                differed_steps.append(idx)
-            else:
-                passed_steps.append(idx)
-
-        diff_str = ", ".join(map(str, differed_steps[:-1])) + f" and {differed_steps[-1]}" if len(differed_steps) > 1 else (str(differed_steps[0]) if differed_steps else "none")
-        pass_str = ", ".join(map(str, passed_steps[:-1])) + f" and {passed_steps[-1]}" if len(passed_steps) > 1 else (str(passed_steps[0]) if passed_steps else "none")
-
-        step_word = "Step" if len(differed_steps) == 1 else "Steps"
-        pass_word = "step" if len(passed_steps) == 1 else "steps"
-        m3b_stmt = f"{step_word} {diff_str} differed from the verified procedure; {pass_word} {pass_str} passed."
+    pb_summary = build_ordered_step_results(playbook_data)
+    if pb_summary.has_results and pb_summary.milestone_statement:
         milestones.append(Milestone(
             key="M3b",
             label="Playbook execution differences",
-            statement=m3b_stmt,
+            statement=pb_summary.milestone_statement,
             status="RECORDED",
             supporting_seqs=[],
-            supporting_ids=[sr.get("step_id") for sr in step_results if sr.get("step_id")],
+            supporting_ids=[s.step_id for s in pb_summary.ordered_steps if s.step_id],
             source_description="StepResult comparison vs verified golden procedure",
         ))
 
@@ -908,27 +1175,14 @@ def build_investigation_summary(
     ))
 
     # ── M7: Investigation tasks assigned and escalated ──
-    tasks = recon.tasks or []
-    if tasks:
-        t_assigned = [t for t in tasks if t.get("assignee_name") and t.get("status") != "ESCALATED"]
-        t_escalated = [t for t in tasks if t.get("status") == "ESCALATED"]
-        esc_reason = (t_escalated[0].get("escalation_reason") or "missing owner") if t_escalated else ""
-        esc_text = f" and {len(t_escalated)} escalated ({esc_reason})" if t_escalated else ""
-        m7_stmt = f"Created {_plural(len(tasks), 'task')}: {len(t_assigned)} assigned to owners{esc_text}."
-        m7_status = "COMPLETED"
-        m7_ids = [t.get("task_id") for t in tasks if t.get("task_id")]
-    else:
-        m7_stmt = "Investigation tasks were not recorded for this incident."
-        m7_status = "NOT RECORDED"
-        m7_ids = []
-
+    t_summary = describe_incident_tasks(recon.tasks)
     milestones.append(Milestone(
         key="M7",
         label="Investigation tasks assigned",
-        statement=m7_stmt,
-        status=m7_status,
+        statement=t_summary.milestone_statement,
+        status=t_summary.milestone_status,
         supporting_seqs=[],
-        supporting_ids=m7_ids,
+        supporting_ids=[t.get("task_id") for t in (recon.tasks or []) if t.get("task_id")],
         source_description="Graph Task nodes with assignment and escalation status",
     ))
 
