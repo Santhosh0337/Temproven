@@ -8,113 +8,198 @@ Built for **Graph Hacks 2026** (WeMakeDevs × FalkorDB).
 
 ---
 
-## What it is and is not
+## What It Is and Is Not
 
-**Is:** A demonstration of temporal graph reasoning over a connected dependency graph that triggers enforced application actions (quarantine, publication gate, task assignment) and reusable investigation memory, all backed by FalkorDB.
+**Is:** A demonstration of temporal graph reasoning over connected dependencies that triggers application actions, including quarantine, publication gating, task assignment, and reusable investigation memory, backed by FalkorDB.
 
-**Is not:** A certification system, a real laboratory tool, a multi-tenant or authenticated service, or a general performance benchmark.
-
----
-
-## Tracks entered
-
-- **Track 1 — Agents That Act on Connected Data:** temporal graph reasoning changes real application behavior (quarantine, backend publication gate, assigned tasks).
-- **Track 2 — Agent Memory and Coordination:** episodic, semantic and procedural memory persist in FalkorDB; three agents coordinate through durable handoff records; a verified playbook from Incident 1 is reused and validated in Incident 2.
+**Is not:** A certification system, a real laboratory tool, an authenticated or multi-tenant service, or a general performance benchmark.
 
 ---
 
-## Quick setup (local Docker)
+## Tracks Entered
 
-> Full instructions in progress — this section will be completed in Phase 7.
+- **Track 1 — Agents That Act on Connected Data:** Temporal graph reasoning changes application behavior through quarantine, publication gating, and task assignment.
+- **Track 2 — Agent Memory and Coordination:** Episodic, semantic, and procedural memory persist in FalkorDB. Three agents coordinate through durable handoff records, and a verified playbook from Incident 1 is reused and validated in Incident 2.
 
-```bash
-# 1. FalkorDB must be running
-docker run -p 6379:6379 -p 3000:3000 -it --rm falkordb/falkordb:latest
+---
 
-# 2. Clone and set up Python environment
-cd Temproven
-python -m venv .venv
-.venv\Scripts\activate          # Windows
-pip install -r requirements.txt
+## Quick Setup
 
-# 3. Configure
-copy .env.example .env          # then edit if needed (defaults work for local Docker)
+### Prerequisites
 
-# 4. Seed the demo graph
-python -m temproven.seed.seed
+- Python 3.13 or a compatible Python version
+- Docker Desktop
+- Git
 
-# 5. Run the CLI demo
-python -m temproven.demo --act all
+### 1. Start FalkorDB
 
-# 6. Launch the UI
-streamlit run temproven/app/streamlit_app.py
+Ensure Docker Desktop is running, then run:
 
-# 7. Run tests
-pytest tests/
+```powershell
+docker run -d --name falkordb `
+  -p 6379:6379 `
+  -p 3000:3000 `
+  -v falkordb_data:/data `
+  falkordb/falkordb:latest
 ```
+
+If a container named `falkordb` already exists, start it instead:
+
+```powershell
+docker start falkordb
+```
+
+### 2. Clone the Repository
+
+```powershell
+git clone https://github.com/Santhosh0337/Temproven.git
+cd Temproven
+```
+
+### 3. Create the Python Environment
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### 4. Configure the Environment
+
+```powershell
+Copy-Item .env.example .env
+```
+
+The example configuration uses a local FalkorDB instance. Adjust `.env` if your connection settings differ.
+
+### 5. Initialize the Demo Data
+
+```powershell
+.\.venv\Scripts\python.exe -m temproven.seed.seed
+```
+
+### 6. Run the CLI Demonstration
+
+```powershell
+.\.venv\Scripts\python.exe -m temproven.demo --act all
+```
+
+### 7. Launch the Dashboard
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run temproven/app/streamlit_app.py
+```
+
+Open the local URL printed by Streamlit in your browser.
+
+### 8. Run the Tests
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/
+```
+
+**Note:** These commands describe the intended setup flow. A fresh-clone installation should be verified before claiming the complete setup has been tested.
 
 ---
 
 ## Streamlit UI Dashboard Architecture
 
-The Temproven UI (`temproven/app/streamlit_app.py`) provides an editorial, technical laboratory integrity dashboard structured across four core capability panels:
+The Temproven dashboard (`temproven/app/streamlit_app.py`) provides four core capability panels.
 
-1. **`01 / INCIDENT` — Incident Overview & Interactive Event Timeline:**
-   - Incident metadata (ID, Type, Status badge, Instrument, UTC/IST recorded timestamps).
-   - Triggering evidence revision block separating `VALID TIME` (science) from `RECORDED TIME` (system as-of).
-   - Key figures strip (affected experiments, datasets, reports, tasks; `—` when uncomputed).
-   - **Interactive Point-Based Event Timeline (Primary Centerpiece):**
-     - One point per persisted event positioned strictly by sequence number (`seq`), never by timestamp.
-     - Distinct marks: Diamonds for significant events (incident open/close, evidence ingestion, actions, postconditions, decisions) and Circles for routine events (queries, handoffs).
-     - Hover tooltips: instant event inspection (sequence, category, event type, summary capped at 120 chars, actor, recorded time).
-     - Click-to-select: clicking any point selects it and immediately displays full details in the Event Inspection Panel directly beneath.
-     - Sequence semantics note: *“Line = recorded event sequence, not causation.”*
-     - Category filters: Multi-select filtering with live event counts; routine queries are hidden by default to prevent clutter, accompanied by an explicit subset banner (*“Showing N of M events; K hidden by filter...”*).
-     - Layout toggle: Seamless horizontal (default) or vertical layout switching.
-     - Keyboard & non-pointer navigation: `◀ Prev`, `Next ▶`, `Go to sequence`, and `Clear` controls.
-   - **Event Inspection Panel:** Full untruncated event summary, type, ID, actor, recorded timestamps (UTC primary, IST secondary), outcome, references, targets, and raw JSON payload.
-   - **Stage Summary (Collapsed Expander):** Secondary 7-canonical-stage Graphviz summary (default closed).
-   - **Full Audit Trail (Collapsed Expander):** Complete, markdown-safe chronological audit trail containing every persisted event in `seq` order (unfiltered).
+### 1. Incident Overview and Interactive Event Timeline
 
-2. **`02 / IMPACT` — Downstream Impact Trace:**
-   - Graphviz directed acyclic graph (DAG) visualizing propagation from instrument through experiments and datasets to published reports.
-   - Inspectable breakdown tables for affected datasets (quarantined), experiments (coverage status & gaps), and downstream reports (held/review).
+- Incident metadata, including ID, type, status, instrument, and UTC/IST timestamps.
+- Evidence revision details distinguishing **valid time** — when evidence applies — from **recorded time** — when the system recorded it.
+- Summary figures for affected experiments, datasets, reports, and tasks.
+- Interactive event timeline positioned by persisted sequence number (`seq`), not timestamp.
+- Distinct markers for significant and routine events.
+- Hover tooltips showing sequence, category, event type, summary, actor, and recorded time.
+- Event selection with a detailed inspection panel.
+- Category filters, event counts, and a notice when events are hidden by filtering.
+- Horizontal and vertical timeline layouts.
+- Previous, next, go-to-sequence, and clear-selection controls.
+- Full event details, including actor, timestamps, outcome, references, targets, and JSON payload.
+- Collapsed stage summary and complete audit trail ordered by event sequence.
 
-3. **`03 / INVESTIGATION` — Verified Playbook & Procedural Memory:**
-   - Reusable investigation playbook metadata (`VERIFIED`, execution mode).
-   - Postcondition checklist (PC1 through PC6) confirming diagnostic integrity.
-   - Step-by-step playbook execution results (`PASSED` / `DIFFERED`).
-   - Semantic memory belief change explanations and investigation query efficiency metrics.
+The timeline explicitly states:
 
-4. **`04 / PUBLICATION` — Backend Publication Gate:**
-   - Live upstream dependency inspector for reports.
-   - Honest publication attempt CTA guarded by explicit user confirmation checkbox.
-   - Hero Decision Block displaying real-time `ALLOW`, `BLOCK`, or `REVIEW_REQUIRED` verdicts, justification, and audit timestamps.
+> Line = recorded event sequence, not causation.
+
+### 2. Downstream Impact Trace
+
+- A graph visualization showing dependencies from instruments through experiments and datasets to downstream reports.
+- Inspection tables for affected datasets, experiment coverage and gaps, and downstream reports marked held or requiring review.
+
+### 3. Investigation, Verified Playbook, and Procedural Memory
+
+- Reusable investigation playbook metadata and verification status.
+- Postcondition checklist covering PC1 through PC6.
+- Step-by-step execution outcomes marked `PASSED` or `DIFFERED`.
+- Semantic-memory belief-change explanations and investigation-query efficiency metrics.
+
+### 4. Backend Publication Gate
+
+- Upstream dependency inspection for reports.
+- Publication-attempt control guarded by an explicit user-confirmation checkbox.
+- Decision block displaying `ALLOW`, `BLOCK`, or `REVIEW_REQUIRED`, with justification and audit timestamps.
 
 ---
 
-## Graph schema, Cypher queries, and time semantics
+## Graph Schema, Cypher Queries, and Time Semantics
 
-> To be filled in Phase 7 with the complete schema diagram, query listing, and bitemporal semantics explanation.
+FalkorDB is the graph database behind Temproven's connected incident data and investigation workflow.
+
+The graph supports:
+
+- Connected incident and evidence records.
+- Dependency tracing from instruments to experiments, datasets, and reports.
+- Persisted investigation events and agent handoffs.
+- Reusable procedural memory and playbook execution records.
+- Downstream actions and publication decisions.
+
+### Temporal Reasoning
+
+Temproven distinguishes two kinds of time:
+
+- **Valid time:** When a fact applies in the modeled real-world timeline.
+- **Recorded time:** When the system records or learns that fact.
+
+This distinction enables an investigation to reconsider earlier decisions when newer authoritative evidence changes the interpretation of an earlier state.
+
+**Implementation reference:** The exact node labels, relationship types, and representative Cypher queries should be taken from the source code. Do not treat this summary as a complete graph-schema specification.
 
 ---
 
-## AI-assistance disclosure
+## AI-Assistance Disclosure
 
-This project was built with the assistance of **Antigravity (Google DeepMind)**, an AI coding assistant. The AI was used to:
-- Generate boilerplate project structure and module stubs
-- Draft Cypher query implementations
-- Suggest test cases for temporal edge conditions
+This project was developed with assistance from **Antigravity**, an AI coding assistant.
 
-All code was reviewed, understood, and verified by the participant. The graph model, query design, temporal semantics, and architectural decisions were directed by the participant with the AI acting as a pair-programming assistant. The participant can explain the graph model, every key query, and the reasoning behind each design choice.
+AI assistance was used to:
+
+- Generate boilerplate project structure and module stubs.
+- Draft Cypher query implementations.
+- Suggest test cases for temporal edge conditions.
+
+The participant reviewed and tested the implementation and is responsible for understanding the submitted code, graph model, temporal semantics, and architectural decisions. The implementation should be explained and demonstrated accurately.
 
 ---
 
 ## Limitations
 
-- Synthetic data only — no real laboratory records
-- No authentication or tenant isolation
-- Quarantine release not implemented (out of scope)
-- Concurrency safety is untested (single-threaded demo only)
-- LLM integration is optional and absent in the P0 submission
-- Performance metric applies to this synthetic scenario only; not a general claim
+- Synthetic data only; no real laboratory records.
+- No authentication or tenant isolation.
+- Quarantine release is not implemented.
+- Concurrency safety has not been tested; the demo targets a single-threaded workflow.
+- LLM integration is absent from this submission; the agents use deterministic, graph-backed workflows.
+- Performance measurements apply only to the synthetic demonstration scenario and are not general performance claims.
+
+---
+
+## Demo
+
+Demo video: Add the accessible demo video URL before submission.
+
+---
+
+## Repository
+
+Source code: https://github.com/Santhosh0337/Temproven
