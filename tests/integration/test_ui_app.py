@@ -150,6 +150,14 @@ def test_streamlit_journey_and_audit_trail_render_from_graph_data(monkeypatch):
         # Verify number input for Go to sequence exists
         assert len(at.number_input) >= 1
 
+        # Verify Investigation Summary (Default View) for active incident (3 events)
+        captions = [c.value for c in at.caption if "INVESTIGATION SUMMARY (DEFAULT VIEW)" in c.value or "WHAT HAPPENED?" in c.value]
+        assert len(captions) >= 1, "Expected Investigation Summary to render by default"
+
+        # Verify Collapsed Advanced: Full Technical Audit Trail expander with exact label for active incident
+        audit_expanders = [e for e in at.expander if e.label == f"Advanced: Full Technical Audit Trail ({event_count} events)"]
+        assert len(audit_expanders) == 1, f"Expected expander labeled 'Advanced: Full Technical Audit Trail ({event_count} events)'"
+
         # Test selecting the empty incident
         select_box = at.sidebar.selectbox[0]
         empty_index = next(
@@ -159,9 +167,14 @@ def test_streamlit_journey_and_audit_trail_render_from_graph_data(monkeypatch):
         at.run(timeout=15)
         assert not at.exception
 
-        # Verify empty state renders safely
-        empty_mds = [m.value for m in at.markdown if "No episodic events recorded" in m.value or "Select a point on the timeline" in m.value]
-        assert len(empty_mds) >= 1, "Expected empty state message for incident with 0 events"
+        # Verify empty state renders safely (markdown or native st.info)
+        empty_mds = [m.value for m in at.markdown if "No episodic events recorded" in m.value]
+        empty_infos = [i.value for i in at.info if "Select a point on the timeline" in i.value]
+        assert (len(empty_mds) + len(empty_infos)) >= 1, "Expected empty state message for incident with 0 events"
+
+        # Verify empty incident has audit expander with 0 events
+        empty_audit_expanders = [e for e in at.expander if e.label == "Advanced: Full Technical Audit Trail (0 events)"]
+        assert len(empty_audit_expanders) == 1, "Expected expander labeled 'Advanced: Full Technical Audit Trail (0 events)'"
 
     finally:
         client = falkordb.FalkorDB(host=config.FALKORDB_HOST, port=config.FALKORDB_PORT)

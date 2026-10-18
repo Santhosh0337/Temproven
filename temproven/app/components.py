@@ -19,10 +19,16 @@ import json
 from typing import Any, Callable
 import streamlit as st
 
+from temproven.app.inspector import render_event_inspector
 from temproven.app.journey import (
     build_journey,
     build_journey_dot,
     extract_payload,
+)
+from temproven.app.summary import (
+    build_investigation_lead,
+    build_investigation_summary,
+    render_investigation_summary,
 )
 from temproven.app.timeline import (
     CATEGORY_LABELS,
@@ -308,6 +314,21 @@ def render_section_1_overview(
     """
     st.markdown(outcomes_html, unsafe_allow_html=True)
 
+    # Investigation Summary (Default View)
+    lead = build_investigation_lead(
+        recon,
+        impact_data=impact_data,
+        playbook_data=playbook_data,
+        belief_change=belief_change,
+    )
+    milestones = build_investigation_summary(
+        recon,
+        impact_data=impact_data,
+        playbook_data=playbook_data,
+        belief_change=belief_change,
+    )
+    render_investigation_summary(lead, milestones)
+
     # 5. Interactive Point-Based Event Timeline (Primary Centerpiece)
     handoff_task_types = {
         h["id"]: h.get("task_type")
@@ -445,78 +466,8 @@ def render_section_1_overview(
             st.session_state[selected_seq_key] = None
             st.rerun()
 
-    # 6. Event Inspection Panel
-    p = view.selected_point
-    if p is None:
-        st.markdown(
-            '<div class="inspector-panel" style="color: #8C929D; font-size: 0.8rem; text-align: center; padding: 1.5rem 0;">'
-            'Select a point on the timeline to inspect an event.'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        hidden_warning = ""
-        if view.is_selected_hidden:
-            hidden_warning = (
-                '<div style="background-color: rgba(245, 158, 11, 0.15); border: 1px solid #F59E0B; color: #F59E0B; '
-                'padding: 0.35rem 0.65rem; border-radius: 3px; font-size: 0.74rem; margin-bottom: 0.5rem;">'
-                '⚠️ Selected event is currently hidden by the category filter.'
-                '</div>'
-            )
-
-        sig_pill_class = "warning" if p.significance == "SIGNIFICANT" else "neutral"
-        out_pill_class = "success" if p.outcome.upper() in ("PASS", "SUCCESS", "ALLOWED", "VERIFIED") else ("danger" if p.outcome.upper() in ("FAIL", "FAILED", "LAPSED", "BLOCKED") else "neutral")
-
-        st.markdown(
-            f"""
-            <div class="inspector-panel">
-                {hidden_warning}
-                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1D2128; padding-bottom: 0.45rem;">
-                    <div>
-                        <span class="mono-text" style="font-size: 1.05rem; font-weight: 700; color: #00D2B4;">EVENT #{p.seq}</span>
-                        <span style="margin-left: 0.5rem; font-size: 0.76rem; color: #D1D5DB; font-weight: 600;">{escape(p.category)}</span>
-                    </div>
-                    <div>
-                        <span class="status-pill {sig_pill_class}">{escape(p.significance)}</span>
-                        <span class="status-pill {out_pill_class}" style="margin-left: 0.3rem;">{escape(p.outcome)}</span>
-                    </div>
-                </div>
-
-                <div class="inspector-summary">
-                    <strong style="color: #9CA3AF;">Summary:</strong> {escape(p.summary or 'No summary provided.')}
-                </div>
-
-                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; font-size: 0.74rem; margin-top: 0.5rem;">
-                    <div>
-                        <div class="micro-label">EVENT TYPE &amp; ID</div>
-                        <div class="mono-text" style="color: #FFFFFF; font-weight: 600;">{escape(p.event_type)}</div>
-                        <div class="mono-text" style="color: #8C929D; font-size: 0.7rem;">{escape(p.event_id)}</div>
-                    </div>
-                    <div>
-                        <div class="micro-label">ACTOR / AGENT</div>
-                        <div class="mono-text" style="color: #FFFFFF;">{escape(p.actor)}</div>
-                        <div style="color: #8C929D; font-size: 0.7rem;">Target: <code class="mono-text">{escape(p.target_id)}</code></div>
-                    </div>
-                    <div>
-                        <div class="micro-label">RECORDED TIME (TRANSACTION)</div>
-                        <div class="mono-text" style="color: #F3F4F6;">{escape(p.timestamp_utc)}</div>
-                        <div class="mono-text" style="color: #8C929D; font-size: 0.7rem;">{escape(p.timestamp_ist)}</div>
-                    </div>
-                    <div>
-                        <div class="micro-label">STEP / TASK TYPE</div>
-                        <div class="mono-text" style="color: #FFFFFF;">{escape(p.step_type if p.step_type != 'n/a' else p.task_type)}</div>
-                        <div style="color: #8C929D; font-size: 0.7rem;">Refs: {len(p.evidence_ids)} ev, {len(p.action_ids)} act</div>
-                    </div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # Full payload expander
-        if p.payload:
-            with st.expander(f"Event #{p.seq} Full Raw Payload ({len(p.payload)} keys)", expanded=False):
-                st.json(p.payload)
+    # 6. Event Inspection Panel (Streamlit-native, zero raw HTML)
+    render_event_inspector(view.selected_point, is_selected_hidden=view.is_selected_hidden)
 
     # 7. Secondary Collapsed Stage Summary Expander
     journey = build_journey(recon.events, handoff_task_types)
@@ -525,13 +476,79 @@ def render_section_1_overview(
         st.graphviz_chart(stage_dot, use_container_width=True)
         st.caption("Solid borders = recorded stages. Dashed borders = [NOT RECORDED] in this incident. Edges denote recorded sequence, not causation.")
 
-    # 8. Collapsed Full Audit Trail Expander (unaffected by filters or selection)
-    with st.expander(f"Full Audit Trail ({len(recon.events)} events recorded)", expanded=False):
+    # 8. Collapsed Full Technical Audit Trail Expander (unaffected by timeline filters)
+    with st.expander(f"Advanced: Full Technical Audit Trail ({len(recon.events)} events)", expanded=False):
+        st.caption("This trail records every database query and agent handoff for traceability. The Investigation Summary above lists the key milestones.")
         all_sorted = sorted(
             recon.events,
             key=lambda e: getattr(e, "seq", 0) if not isinstance(e, dict) else e.get("seq", 0),
         )
-        st.markdown(build_timeline_html(all_sorted), unsafe_allow_html=True)
+        all_types = sorted(list({getattr(e, "event_type", "") if not isinstance(e, dict) else e.get("event_type", "") for e in all_sorted}))
+        selected_audit_types = st.multiselect(
+            "Filter by event type",
+            options=all_types,
+            default=all_types,
+            key=f"audit_type_filter_{recon.incident_id}",
+        )
+        search_query = st.text_input(
+            "Search events (seq, type, actor, summary, outcome, target)",
+            key=f"audit_search_{recon.incident_id}",
+        ).strip().lower()
+
+        filtered_audit = []
+        for e in all_sorted:
+            ev_type = getattr(e, "event_type", "") if not isinstance(e, dict) else e.get("event_type", "")
+            if ev_type not in selected_audit_types:
+                continue
+            if search_query:
+                seq_val = str(getattr(e, "seq", "") if not isinstance(e, dict) else e.get("seq", ""))
+                actor_val = str(getattr(e, "actor", "") if not isinstance(e, dict) else e.get("actor", "")).lower()
+                sum_val = str(getattr(e, "summary", "") if not isinstance(e, dict) else e.get("summary", "")).lower()
+                out_val = str(getattr(e, "outcome", "") if not isinstance(e, dict) else e.get("outcome", "")).lower()
+                tgt_val = str(getattr(e, "target_id", "") if not isinstance(e, dict) else e.get("target_id", "")).lower()
+                if (
+                    search_query not in seq_val
+                    and search_query not in ev_type.lower()
+                    and search_query not in actor_val
+                    and search_query not in sum_val
+                    and search_query not in out_val
+                    and search_query not in tgt_val
+                ):
+                    continue
+            filtered_audit.append(e)
+
+        st.caption(f"Showing {len(filtered_audit)} of {len(recon.events)} events")
+
+        rows = []
+        for e in filtered_audit:
+            seq = getattr(e, "seq", 0) if not isinstance(e, dict) else e.get("seq", 0)
+            at_val = getattr(e, "at", None) if not isinstance(e, dict) else e.get("at")
+            t_str = format_timestamp(at_val, include_ist=False) if at_val is not None else ""
+            actor = getattr(e, "actor", "") if not isinstance(e, dict) else e.get("actor", "")
+            ev_type = getattr(e, "event_type", "") if not isinstance(e, dict) else e.get("event_type", "")
+            outcome = getattr(e, "outcome", "") if not isinstance(e, dict) else e.get("outcome", "")
+            summary = getattr(e, "summary", "") if not isinstance(e, dict) else e.get("summary", "")
+            target = getattr(e, "target_id", "") if not isinstance(e, dict) else e.get("target_id", "")
+            ev_ids = getattr(e, "evidence_ids", []) if not isinstance(e, dict) else e.get("evidence_ids", [])
+            act_ids = getattr(e, "action_ids", []) if not isinstance(e, dict) else e.get("action_ids", [])
+            ref_parts = []
+            if ev_ids:
+                ref_parts.append(f"ev: {', '.join(ev_ids)}")
+            if act_ids:
+                ref_parts.append(f"act: {', '.join(act_ids)}")
+            refs = "; ".join(ref_parts)
+
+            rows.append({
+                "Seq": seq,
+                "Timestamp (UTC)": t_str,
+                "Type": ev_type,
+                "Actor": actor,
+                "Outcome": outcome,
+                "Summary": summary,
+                "Target": target,
+                "References": refs,
+            })
+        st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
 def render_section_2_impact(
