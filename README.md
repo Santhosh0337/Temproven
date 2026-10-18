@@ -161,6 +161,70 @@ The schema defines indexes on the `id` property for the following 22 node labels
 | Procedural memory | `InvestigationPlaybook`, `PlaybookStep`, `PlaybookRun`, `StepResult` |
 | Metrics | `IncidentMetrics` |
 
+#### Graph Relationship Map
+
+The diagram below shows the main entities and relationships used by Temproven. Arrows follow the stored relationship direction.
+
+```mermaid
+flowchart TD
+    subgraph Evidence["Temporal Evidence"]
+        CERT["CalibrationCertificate"]
+        INST["Instrument"]
+        REV["CertificateRevocation"]
+        CLAIM["Claim"]
+        NEW["Newer Claim"]
+        OLD["Earlier Claim"]
+        EV["Evidence"]
+
+        CERT -->|CERTIFIES| INST
+        CERT -->|HAS_VALIDITY| CLAIM
+        CERT -->|HAS_REVOCATION| REV
+        CLAIM -->|SUPPORTED_BY| EV
+        NEW -->|SUPERSEDES| OLD
+        NEW ---|CONTRADICTS| OLD
+    end
+
+    subgraph Lab["Laboratory Dependencies"]
+        EXP["Experiment"]
+        USE["InstrumentUsage"]
+        DS["Dataset"]
+        DERIVED["Derived Dataset"]
+        RPT["Report"]
+
+        EXP -->|HAS_USAGE| USE
+        USE -->|OF_INSTRUMENT| INST
+        EXP -->|PRODUCED| DS
+        DERIVED -->|DERIVED_FROM| DS
+        RPT -->|USES_DATASET| DS
+    end
+
+    subgraph Memory["Incident and Agent Memory"]
+        INC["Incident"]
+        EVENT["Event"]
+        HANDOFF["Handoff"]
+        TASK["Task"]
+        ACTION["ActionRecord"]
+        PLAYBOOK["InvestigationPlaybook"]
+        STEP["PlaybookStep"]
+        RUN["PlaybookRun"]
+        RESULT["StepResult"]
+        METRICS["IncidentMetrics"]
+
+        INC -->|HAS_EVENT| EVENT
+        INC -->|HAS_HANDOFF| HANDOFF
+        INC -->|HAS_TASK| TASK
+        ACTION -->|PART_OF| INC
+        EVENT -->|REFERENCES_EVIDENCE| EV
+        EVENT -->|REFERENCES_ACTION| ACTION
+        PLAYBOOK -->|HAS_STEP| STEP
+        RUN -->|USED_PLAYBOOK| PLAYBOOK
+        RUN -->|FOR_INCIDENT| INC
+        RUN -->|HAS_RESULT| RESULT
+        PLAYBOOK -->|VALIDATED_IN| INC
+        INC -->|HAS_METRICS| METRICS
+    end
+```
+
 Additional property indexes are defined for:
 
 - `Claim.subject_id`
