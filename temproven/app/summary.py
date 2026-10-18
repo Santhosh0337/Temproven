@@ -11,11 +11,17 @@ from __future__ import annotations
 import streamlit as st
 
 from temproven.app.presenters import (
+    ClosureRepresentation,
+    IncidentReportRestrictions,
     LeadAnswers,
     Milestone,
+    ReportRestrictionDetail,
     _plural,
     build_investigation_lead,
     build_investigation_summary,
+    describe_incident_closure,
+    describe_incident_report_restrictions,
+    describe_single_report_restriction,
 )
 
 

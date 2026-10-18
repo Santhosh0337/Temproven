@@ -322,6 +322,262 @@ def _plural(count: int, singular: str, plural: str | None = None) -> str:
     return f"{count} {singular}" if count == 1 else f"{count} {p}"
 
 
+@dataclass
+class ClosureRepresentation:
+    """Truthful incident closure representation from independent sources."""
+    stored_status: str
+    has_closing_event: bool
+    closing_seq: int | None = None
+    closing_time_utc: str | None = None
+    closing_time_ist: str | None = None
+    actor: str | None = None
+    outcome: str | None = None
+    milestone_status: str = "NOT RECORDED"  # "COMPLETED" or "NOT RECORDED"
+    milestone_statement: str = ""
+    supporting_seqs: list[int] = field(default_factory=list)
+
+
+def describe_incident_closure(recon: Any) -> ClosureRepresentation:
+    """
+    Derive truthful incident closure presentation from independent persisted sources:
+    1. Stored status (Incident.status).
+    2. Closing event (searching exclusively for INCIDENT_CLOSED in event history).
+    Never substitutes opened_at or any other timestamp for a missing closing event.
+    """
+    if hasattr(recon, "recon"):
+        recon = getattr(recon, "recon")
+    elif isinstance(recon, dict) and ("recon" in recon or "incident" in recon):
+        recon = recon.get("recon") or recon.get("incident")
+
+    stored_status = getattr(recon, "status", None) or (recon.get("status") if isinstance(recon, dict) else "UNKNOWN")
+    events = getattr(recon, "events", None) or (recon.get("events") if isinstance(recon, dict) else []) or []
+    
+    closed_ev = next(
+        (
+            e for e in events
+            if getattr(e, "event_type", None) == "INCIDENT_CLOSED"
+            or (isinstance(e, dict) and e.get("event_type") == "INCIDENT_CLOSED")
+        ),
+        None,
+    )
+
+    if closed_ev:
+        seq = getattr(closed_ev, "seq", None) if not isinstance(closed_ev, dict) else closed_ev.get("seq")
+        at_val = getattr(closed_ev, "at", None) if not isinstance(closed_ev, dict) else closed_ev.get("at")
+        actor = getattr(closed_ev, "actor_agent", None) or getattr(closed_ev, "actor", None) or (
+            closed_ev.get("actor_agent") or closed_ev.get("actor") if isinstance(closed_ev, dict) else None
+        ) or "n/a"
+        outcome = (
+            getattr(closed_ev, "outcome", None) if not isinstance(closed_ev, dict) else closed_ev.get("outcome")
+        ) or "n/a"
+
+        t_utc = format_timestamp(at_val, include_ist=False) if at_val is not None else "n/a"
+        t_ist = format_timestamp(at_val, include_ist=True) if at_val is not None else "n/a"
+
+        if stored_status == "CLOSED":
+            stmt = f"Closing event recorded at {t_utc} [Seq #{seq}] by {actor} (outcome: {outcome}). Stored status: CLOSED."
+        else:
+            stmt = f"Closing event recorded at {t_utc} [Seq #{seq}] by {actor} (outcome: {outcome}); stored status remains {stored_status}."
+
+        return ClosureRepresentation(
+            stored_status=stored_status,
+            has_closing_event=True,
+            closing_seq=seq,
+            closing_time_utc=t_utc,
+            closing_time_ist=t_ist,
+            actor=actor,
+            outcome=outcome,
+            milestone_status="COMPLETED",
+            milestone_statement=stmt,
+            supporting_seqs=[seq] if seq is not None else [],
+        )
+    else:
+        if stored_status == "CLOSED":
+            stmt = "Stored status is CLOSED; no closing event is recorded."
+        else:
+            stmt = f"Incident remains {stored_status}; no closing event is recorded."
+
+        return ClosureRepresentation(
+            stored_status=stored_status,
+            has_closing_event=False,
+            milestone_status="NOT RECORDED",
+            milestone_statement=stmt,
+            supporting_seqs=[],
+        )
+
+
+@dataclass
+class ReportRestrictionDetail:
+    """Truthful restriction description for a single report."""
+    report_id: str
+    current_status: str
+    action_type: str | None = None
+    action_recorded_state: str | None = None
+    reason: str = ""
+    restriction_kind: str = "NONE"  # "HELD", "REQUIRES_REVIEW", or "NONE"
+    wording: str = "unrestricted"   # "held", "requires review", or "unrestricted"
+    full_description: str = ""
+
+
+@dataclass
+class IncidentReportRestrictions:
+    """Aggregated report restriction summary for an incident."""
+    details: list[ReportRestrictionDetail]
+    held_ids: list[str]
+    review_ids: list[str]
+    unrestricted_ids: list[str]
+    outcome_strip_label: str
+    lead_action_text: str
+    milestone_statement: str
+
+
+def describe_single_report_restriction(
+    report_id: str,
+    current_status: str | None = None,
+    action_records: list[dict[str, Any]] | None = None,
+) -> ReportRestrictionDetail:
+    """
+    Derive restriction wording for a single report from persisted action records and current status:
+    - HELD -> 'held'
+    - REQUIRES_REVIEW -> 'requires review' (never 'held')
+    - DRAFT / PUBLISHED with no restriction -> not restricted ('unrestricted')
+    - If ActionRecord recorded state differs from current status, mention both honestly.
+    """
+    matching_ar = None
+    if action_records:
+        for a in action_records:
+            if str(a.get("target_id", "")).upper() == str(report_id).upper() and a.get("action_type") in ("HOLD_REPORT", "FLAG_REPORT_REVIEW"):
+                matching_ar = a
+                break
+
+    act_type = matching_ar.get("action_type") if matching_ar else None
+    new_state = matching_ar.get("new_state") if matching_ar else None
+    reason = matching_ar.get("reason", "") if matching_ar else ""
+    
+    curr = str(current_status or (new_state if new_state else "DRAFT")).upper()
+
+    if curr == "HELD":
+        kind = "HELD"
+        wording = "held"
+        if new_state and new_state != "HELD":
+            desc = f"Report {report_id} held (recorded action was {new_state})"
+        else:
+            desc = f"Report {report_id} held"
+    elif curr == "REQUIRES_REVIEW":
+        kind = "REQUIRES_REVIEW"
+        wording = "requires review"
+        if new_state and new_state != "REQUIRES_REVIEW":
+            desc = f"Report {report_id} requires review (recorded action was {new_state})"
+        else:
+            desc = f"Report {report_id} requires review"
+    else:
+        # Current status is DRAFT, PUBLISHED, etc.
+        if act_type == "HOLD_REPORT" or new_state == "HELD":
+            kind = "HELD"
+            wording = f"marked HELD; current status: {curr}"
+            desc = f"Report {report_id} marked HELD; current status: {curr}"
+        elif act_type == "FLAG_REPORT_REVIEW" or new_state == "REQUIRES_REVIEW":
+            kind = "REQUIRES_REVIEW"
+            wording = f"marked REQUIRES_REVIEW; current status: {curr}"
+            desc = f"Report {report_id} marked REQUIRES_REVIEW; current status: {curr}"
+        else:
+            kind = "NONE"
+            wording = "unrestricted"
+            desc = f"Report {report_id} is unaffected ({curr})"
+
+    return ReportRestrictionDetail(
+        report_id=report_id,
+        current_status=curr,
+        action_type=act_type,
+        action_recorded_state=new_state,
+        reason=reason,
+        restriction_kind=kind,
+        wording=wording,
+        full_description=desc,
+    )
+
+
+def describe_incident_report_restrictions(
+    action_records: list[dict[str, Any]] | None = None,
+    reports_data: list[dict[str, Any]] | None = None,
+) -> IncidentReportRestrictions:
+    """
+    Derive aggregated report restriction presentation for an incident:
+    - Reports held vs requiring review are distinguished and counted separately.
+    - Zero hardcoding of IDs; purely derived from persisted action records and report status.
+    """
+    action_records = action_records or []
+    reports_data = reports_data or []
+
+    # Map report status by ID from reports_data if available (case-insensitive lookup)
+    status_by_id = {str(r["id"]).upper(): r.get("current_status") or r.get("status") for r in reports_data if r.get("id")}
+
+    # Gather affected report IDs from action records and reports_data
+    seen_ids: list[str] = []
+    seen_ids_upper: set[str] = set()
+    for a in action_records:
+        if a.get("action_type") in ("HOLD_REPORT", "FLAG_REPORT_REVIEW") and a.get("target_id"):
+            tid = a["target_id"]
+            if str(tid).upper() not in seen_ids_upper:
+                seen_ids.append(tid)
+                seen_ids_upper.add(str(tid).upper())
+
+    for r in reports_data:
+        rid = r.get("id")
+        if rid and str(rid).upper() not in seen_ids_upper:
+            seen_ids.append(rid)
+            seen_ids_upper.add(str(rid).upper())
+
+    details = [
+        describe_single_report_restriction(rid, current_status=status_by_id.get(str(rid).upper()), action_records=action_records)
+        for rid in seen_ids
+    ]
+
+    held_ids = [d.report_id for d in details if d.restriction_kind == "HELD"]
+    review_ids = [d.report_id for d in details if d.restriction_kind == "REQUIRES_REVIEW"]
+    unrestricted_ids = [d.report_id for d in details if d.restriction_kind == "NONE"]
+
+    # 1. Outcome strip label (compact, accurate)
+    if held_ids and not review_ids:
+        strip_label = f"{len(held_ids)} held ({', '.join(held_ids)})"
+    elif review_ids and not held_ids:
+        strip_label = f"{len(review_ids)} requires review ({', '.join(review_ids)})"
+    elif held_ids and review_ids:
+        strip_label = f"{len(held_ids)} held ({', '.join(held_ids)}); {len(review_ids)} require review ({', '.join(review_ids)})"
+    else:
+        strip_label = "0 restricted"
+
+    # 2. Lead action text
+    if held_ids and not review_ids:
+        lead_text = f"{_plural(len(held_ids), 'report')} held ({', '.join(held_ids)})"
+    elif review_ids and not held_ids:
+        lead_text = f"{_plural(len(review_ids), 'report')} requires review ({', '.join(review_ids)})"
+    elif held_ids and review_ids:
+        lead_text = f"{_plural(len(held_ids), 'report')} held ({', '.join(held_ids)}); {_plural(len(review_ids), 'report')} requires review ({', '.join(review_ids)})"
+    else:
+        lead_text = ""
+
+    # 3. Milestone statement
+    if held_ids and not review_ids:
+        m6_stmt = f"Restricted publication for {_plural(len(held_ids), 'downstream report')} ({', '.join(held_ids)}): held pending revalidation."
+    elif review_ids and not held_ids:
+        m6_stmt = f"Restricted publication for {_plural(len(review_ids), 'downstream report')} ({', '.join(review_ids)}): requires review."
+    elif held_ids and review_ids:
+        m6_stmt = f"Restricted publication for {_plural(len(held_ids), 'downstream report')} held ({', '.join(held_ids)}) and {_plural(len(review_ids), 'downstream report')} requiring review ({', '.join(review_ids)})."
+    else:
+        m6_stmt = "Report restrictions were not recorded for this incident."
+
+    return IncidentReportRestrictions(
+        details=details,
+        held_ids=held_ids,
+        review_ids=review_ids,
+        unrestricted_ids=unrestricted_ids,
+        outcome_strip_label=strip_label,
+        lead_action_text=lead_text,
+        milestone_statement=m6_stmt,
+    )
+
+
 def build_investigation_lead(
     recon: Any,
     impact_data: dict[str, Any] | None = None,
@@ -380,14 +636,17 @@ def build_investigation_lead(
 
     # 3. What actions were taken?
     q_ids = [a.get("target_id") for a in (recon.action_records or []) if a.get("action_type") == "QUARANTINE_DATASET" and a.get("target_id")]
-    h_ids = [a.get("target_id") for a in (recon.action_records or []) if a.get("action_type") in ("HOLD_REPORT", "FLAG_REPORT_REVIEW") and a.get("target_id")]
+    r_restr = describe_incident_report_restrictions(
+        action_records=recon.action_records,
+        reports_data=impact_data.get("reports", []) if impact_data else None,
+    )
     t_cnt = len(recon.tasks or [])
 
     actions_parts = []
     if q_ids:
         actions_parts.append(f"{_plural(len(q_ids), 'dataset')} quarantined ({', '.join(q_ids)})")
-    if h_ids:
-        actions_parts.append(f"{_plural(len(h_ids), 'report')} restricted from publication ({', '.join(h_ids)})")
+    if r_restr.lead_action_text:
+        actions_parts.append(r_restr.lead_action_text)
     if t_cnt:
         actions_parts.append(f"{_plural(t_cnt, 'review task')} created")
 
@@ -631,22 +890,17 @@ def build_investigation_summary(
     ))
 
     # ── M6: Report restrictions applied ──
-    r_actions = [a for a in (recon.action_records or []) if a.get("action_type") in ("HOLD_REPORT", "FLAG_REPORT_REVIEW") and a.get("target_id")]
-    r_ids = [a["target_id"] for a in r_actions]
-
-    if r_ids:
-        m6_stmt = f"Restricted publication for {_plural(len(r_ids), 'downstream report')} ({', '.join(r_ids)}): held pending revalidation or flagged for review."
-        m6_status = "COMPLETED"
-        m6_ids = r_ids
-    else:
-        m6_stmt = "Report restrictions were not recorded for this incident."
-        m6_status = "NOT RECORDED"
-        m6_ids = []
+    r_restr = describe_incident_report_restrictions(
+        action_records=recon.action_records,
+        reports_data=impact_data.get("reports", []) if impact_data else None,
+    )
+    m6_ids = r_restr.held_ids + r_restr.review_ids
+    m6_status = "COMPLETED" if m6_ids else "NOT RECORDED"
 
     milestones.append(Milestone(
         key="M6",
         label="Report restrictions applied",
-        statement=m6_stmt,
+        statement=r_restr.milestone_statement,
         status=m6_status,
         supporting_seqs=m5_seqs,
         supporting_ids=m6_ids,
@@ -709,24 +963,13 @@ def build_investigation_summary(
     ))
 
     # ── M9: Incident closure ──
-    closed_ev = next((e for e in (recon.events or []) if getattr(e, "event_type", "") == "INCIDENT_CLOSED"), None)
-    if getattr(recon, "status", "") == "CLOSED":
-        c_time = format_timestamp(closed_ev.at, include_ist=False) if closed_ev else format_timestamp(getattr(recon, "opened_at", 0), include_ist=False)
-        m9_stmt = f"Incident marked CLOSED at {c_time} UTC following verified enforcement and audit completion."
-        m9_status = "COMPLETED"
-        m9_seqs = [getattr(closed_ev, "seq", 0)] if closed_ev else []
-    else:
-        curr_st = getattr(recon, "status", "OPEN")
-        m9_stmt = f"Incident remains {curr_st}; closure was not recorded."
-        m9_status = "NOT RECORDED"
-        m9_seqs = []
-
+    closure = describe_incident_closure(recon)
     milestones.append(Milestone(
         key="M9",
         label="Incident closure",
-        statement=m9_stmt,
-        status=m9_status,
-        supporting_seqs=m9_seqs,
+        statement=closure.milestone_statement,
+        status=closure.milestone_status,
+        supporting_seqs=closure.supporting_seqs,
         supporting_ids=[getattr(recon, "incident_id", "")],
         source_description="Incident status property and INCIDENT_CLOSED event",
     ))

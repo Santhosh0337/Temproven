@@ -23,11 +23,17 @@ from typing import Any
 import pytest
 
 from temproven.app.summary import (
+    ClosureRepresentation,
+    IncidentReportRestrictions,
     LeadAnswers,
     Milestone,
+    ReportRestrictionDetail,
     _plural,
     build_investigation_lead,
     build_investigation_summary,
+    describe_incident_closure,
+    describe_incident_report_restrictions,
+    describe_single_report_restriction,
 )
 
 
@@ -52,6 +58,7 @@ class MockEvent:
     event_type: str
     at: int = 1792227600
     actor: str = "test_agent"
+    actor_agent: str | None = None
     summary: str = "Test event"
     outcome: str | None = None
     target_id: str = "n/a"
@@ -116,7 +123,7 @@ def test_investigation_lead_answers_all_passed():
     assert "inst-alpha" in lead.what_happened
     assert "1 experiment, 2 datasets, and 1 downstream report" in lead.what_was_affected
     assert "2 datasets quarantined" in lead.actions_taken
-    assert "1 report restricted from publication" in lead.actions_taken
+    assert "1 report held" in lead.actions_taken
     assert "1 review task created" in lead.actions_taken
     assert lead.checks_status == "PASS"
     assert lead.all_passed is True
@@ -284,6 +291,32 @@ def test_unclosed_incident_does_not_show_closure():
     assert "remains IN_PROGRESS" in m9.statement
 
 
+def test_stored_status_closed_without_closing_event_shows_not_recorded():
+    """
+    REPRODUCTION TEST FOR CLOSURE BUG:
+    When stored status is CLOSED but no INCIDENT_CLOSED event exists (like INC-2026-001):
+    1. Milestone M9 status MUST be NOT RECORDED (never COMPLETED).
+    2. No closure timestamp may be shown (specifically opened_at MUST NOT be used).
+    3. Milestone statement must honestly say: 'Stored status is CLOSED; no closing event is recorded.'
+    4. Supporting sequences must be empty (never contain opened_at or unrelated event seqs).
+    """
+    recon = MockReconstruction(
+        incident_id="inc-missing-close",
+        status="CLOSED",
+        opened_at=1792227600,
+        events=[
+            MockEvent(id="e1", seq=1, event_type="POSTCONDITION_CHECKED", outcome="PASSED"),
+        ],
+    )
+    milestones = build_investigation_summary(recon)
+    m9 = next(m for m in milestones if m.key == "M9")
+    assert m9.status == "NOT RECORDED", "A stored status of CLOSED must not turn a missing event into COMPLETED"
+    assert "2026-10-17" not in m9.statement, "opened_at must never be substituted for closure time"
+    assert "Stored status is CLOSED; no closing event is recorded." in m9.statement
+    assert m9.supporting_seqs == []
+
+
+
 def test_routine_query_and_handoff_events_never_become_milestones():
     """Routine queries, handoff events, and arbitrary events do not create milestones."""
     events = [
@@ -371,3 +404,241 @@ def test_static_guards_no_hardcoded_ids_or_html():
     demo_id_pattern = re.compile(r"\b(INC-2026-\d+|DS-[AB]\d+|RPT-[AB]\d+|EXP-[AB]\d+|INS-[AB]\d+|CERT-[AB]\d+)\b")
     assert not demo_id_pattern.search(summary_code), "summary.py must not contain hardcoded demo IDs"
     assert not demo_id_pattern.search(inspector_code), "inspector.py must not contain hardcoded demo IDs"
+
+
+def test_investigation_lead_report_requires_review():
+    """Lead answers accurately describe REQUIRES_REVIEW reports and do not call them held."""
+    recon = MockReconstruction(
+        action_records=[
+            {"action_type": "FLAG_REPORT_REVIEW", "target_id": "rpt-rev-1"},
+        ],
+    )
+    lead = build_investigation_lead(recon)
+    assert "1 report requires review (rpt-rev-1)" in lead.actions_taken
+    assert "held" not in lead.actions_taken
+
+
+def test_investigation_lead_both_held_and_review():
+    """Lead answers distinguish held and review reports when both are present."""
+    recon = MockReconstruction(
+        action_records=[
+            {"action_type": "HOLD_REPORT", "target_id": "rpt-h1"},
+            {"action_type": "FLAG_REPORT_REVIEW", "target_id": "rpt-r1"},
+        ],
+    )
+    lead = build_investigation_lead(recon)
+    assert "1 report held (rpt-h1)" in lead.actions_taken
+    assert "1 report requires review (rpt-r1)" in lead.actions_taken
+
+
+def test_incident_closure_with_present_closing_event():
+    """
+    Present INCIDENT_CLOSED event:
+    1. Shows its own timestamp in UTC.
+    2. Shows its own sequence number.
+    3. Shows its own actor and outcome.
+    4. Milestone status is COMPLETED.
+    5. Supporting sequence contains exactly the closing event sequence.
+    """
+    recon = MockReconstruction(
+        incident_id="INC-2026-002",
+        status="CLOSED",
+        opened_at=1792227600,
+        events=[
+            MockEvent(
+                id="e73",
+                seq=73,
+                event_type="INCIDENT_CLOSED",
+                at=1792238400,  # 2026-10-17 12:00:00 UTC
+                actor_agent="IntegrityAgent",
+                outcome="CLOSED",
+            ),
+        ],
+    )
+    closure = describe_incident_closure(recon)
+
+    assert closure.has_closing_event is True
+    assert closure.stored_status == "CLOSED"
+    assert closure.closing_seq == 73
+    assert closure.closing_time_utc == "2026-10-17 12:00:00 UTC"
+    assert closure.actor == "IntegrityAgent"
+    assert closure.outcome == "CLOSED"
+    assert closure.milestone_status == "COMPLETED"
+    assert closure.supporting_seqs == [73]
+    assert "Closing event recorded at 2026-10-17 12:00:00 UTC [Seq #73] by IntegrityAgent (outcome: CLOSED). Stored status: CLOSED." == closure.milestone_statement
+
+    # Also verify full summary milestone M9
+    milestones = build_investigation_summary(recon)
+    m9 = next(m for m in milestones if m.key == "M9")
+    assert m9.status == "COMPLETED"
+    assert m9.supporting_seqs == [73]
+    assert "Seq #73" in m9.statement
+    assert "12:00:00" in m9.statement
+
+
+def test_incident_closure_anomaly_not_closed_with_closing_event():
+    """
+    Anomaly case: stored status is not CLOSED, but closing event exists.
+    Truthful presentation states both facts without masking either.
+    """
+    recon = MockReconstruction(
+        incident_id="inc-anomaly",
+        status="IN_PROGRESS",
+        events=[
+            MockEvent(
+                id="e10",
+                seq=10,
+                event_type="INCIDENT_CLOSED",
+                at=1792238400,
+                actor_agent="IntegrityAgent",
+                outcome="CLOSED",
+            ),
+        ],
+    )
+    closure = describe_incident_closure(recon)
+    assert closure.has_closing_event is True
+    assert closure.stored_status == "IN_PROGRESS"
+    assert "stored status remains IN_PROGRESS" in closure.milestone_statement
+    assert closure.milestone_status == "COMPLETED"
+
+
+def test_closure_static_guard_no_opened_at_fallback():
+    """
+    STATIC GUARD:
+    Statically verify that describe_incident_closure in presenters.py NEVER
+    references opened_at or attempts fallback substitution.
+    """
+    project_root = Path(__file__).resolve().parents[2]
+    presenters_file = project_root / "temproven" / "app" / "presenters.py"
+    code = presenters_file.read_text(encoding="utf-8")
+
+    # Extract describe_incident_closure function body
+    match = re.search(r"def describe_incident_closure\(.*?\n(?=def |\Z)", code, re.DOTALL)
+    assert match is not None, "describe_incident_closure function must exist in presenters.py"
+    fn_body = match.group(0)
+
+    # Filter out docstrings and comments to inspect only executable code
+    exec_lines = [
+        line for line in fn_body.splitlines()
+        if not line.strip().startswith(("#", '"""', "'''", "*")) and "substitutes" not in line
+    ]
+    exec_code = "\n".join(exec_lines)
+    assert "opened_at" not in exec_code, "describe_incident_closure must never reference opened_at in executable code"
+
+
+def test_describe_single_report_restriction():
+    """Unit tests for describe_single_report_restriction covering all branches."""
+    # 1. HELD report
+    d1 = describe_single_report_restriction(
+        "RPT-3",
+        current_status="HELD",
+        action_records=[{"action_type": "HOLD_REPORT", "target_id": "RPT-3", "new_state": "HELD"}],
+    )
+    assert d1.restriction_kind == "HELD"
+    assert d1.wording == "held"
+    assert d1.full_description == "Report RPT-3 held"
+
+    # 2. REQUIRES_REVIEW report
+    d2 = describe_single_report_restriction(
+        "RPT-1",
+        current_status="REQUIRES_REVIEW",
+        action_records=[{"action_type": "FLAG_REPORT_REVIEW", "target_id": "RPT-1", "new_state": "REQUIRES_REVIEW"}],
+    )
+    assert d2.restriction_kind == "REQUIRES_REVIEW"
+    assert d2.wording == "requires review"
+    assert d2.full_description == "Report RPT-1 requires review"
+
+    # 3. Differing ActionRecord state vs current status: action was HELD but current status is DRAFT
+    d3 = describe_single_report_restriction(
+        "RPT-X",
+        current_status="DRAFT",
+        action_records=[{"action_type": "HOLD_REPORT", "target_id": "RPT-X", "new_state": "HELD"}],
+    )
+    assert d3.restriction_kind == "HELD"
+    assert d3.wording == "marked HELD; current status: DRAFT"
+    assert "marked HELD; current status: DRAFT" in d3.full_description
+
+    # 4. Differing ActionRecord state vs current status: action was FLAG_REPORT_REVIEW but status is DRAFT
+    d4 = describe_single_report_restriction(
+        "RPT-Y",
+        current_status="DRAFT",
+        action_records=[{"action_type": "FLAG_REPORT_REVIEW", "target_id": "RPT-Y", "new_state": "REQUIRES_REVIEW"}],
+    )
+    assert d4.restriction_kind == "REQUIRES_REVIEW"
+    assert d4.wording == "marked REQUIRES_REVIEW; current status: DRAFT"
+
+    # 5. Control report unaffected (PUBLISHED)
+    d5 = describe_single_report_restriction(
+        "RPT-2",
+        current_status="PUBLISHED",
+        action_records=[],
+    )
+    assert d5.restriction_kind == "NONE"
+    assert d5.wording == "unrestricted"
+    assert "unaffected (PUBLISHED)" in d5.full_description
+
+
+def test_describe_incident_report_restrictions_aggregation():
+    """Unit tests for describe_incident_report_restrictions covering combinations and pluralization."""
+    # 1. Single held
+    r1 = describe_incident_report_restrictions(
+        action_records=[{"action_type": "HOLD_REPORT", "target_id": "RPT-3"}],
+        reports_data=[{"id": "RPT-3", "current_status": "HELD"}],
+    )
+    assert r1.outcome_strip_label == "1 held (RPT-3)"
+    assert r1.lead_action_text == "1 report held (RPT-3)"
+    assert "1 downstream report (RPT-3): held pending revalidation." in r1.milestone_statement
+    assert r1.held_ids == ["RPT-3"]
+    assert r1.review_ids == []
+
+    # 2. Single requires review
+    r2 = describe_incident_report_restrictions(
+        action_records=[{"action_type": "FLAG_REPORT_REVIEW", "target_id": "RPT-1"}],
+        reports_data=[{"id": "RPT-1", "current_status": "REQUIRES_REVIEW"}],
+    )
+    assert r2.outcome_strip_label == "1 requires review (RPT-1)"
+    assert r2.lead_action_text == "1 report requires review (RPT-1)"
+    assert "1 downstream report (RPT-1): requires review." in r2.milestone_statement
+    assert r2.held_ids == []
+    assert r2.review_ids == ["RPT-1"]
+
+    # 3. Both held and review (never merged under "held")
+    r3 = describe_incident_report_restrictions(
+        action_records=[
+            {"action_type": "HOLD_REPORT", "target_id": "RPT-3"},
+            {"action_type": "FLAG_REPORT_REVIEW", "target_id": "RPT-1"},
+        ],
+        reports_data=[
+            {"id": "RPT-3", "current_status": "HELD"},
+            {"id": "RPT-1", "current_status": "REQUIRES_REVIEW"},
+            {"id": "RPT-2", "current_status": "PUBLISHED"},
+        ],
+    )
+    assert r3.outcome_strip_label == "1 held (RPT-3); 1 require review (RPT-1)"
+    assert r3.lead_action_text == "1 report held (RPT-3); 1 report requires review (RPT-1)"
+    assert "1 downstream report held (RPT-3) and 1 downstream report requiring review (RPT-1)." in r3.milestone_statement
+    assert r3.held_ids == ["RPT-3"]
+    assert r3.review_ids == ["RPT-1"]
+    assert "RPT-2" in r3.unrestricted_ids
+
+    # 4. Multiple held (pluralization check)
+    r4 = describe_incident_report_restrictions(
+        action_records=[
+            {"action_type": "HOLD_REPORT", "target_id": "RPT-A"},
+            {"action_type": "HOLD_REPORT", "target_id": "RPT-B"},
+        ],
+        reports_data=[
+            {"id": "RPT-A", "current_status": "HELD"},
+            {"id": "RPT-B", "current_status": "HELD"},
+        ],
+    )
+    assert r4.outcome_strip_label == "2 held (RPT-A, RPT-B)"
+    assert r4.lead_action_text == "2 reports held (RPT-A, RPT-B)"
+    assert "2 downstream reports (RPT-A, RPT-B): held pending revalidation." in r4.milestone_statement
+
+    # 5. Zero restricted
+    r5 = describe_incident_report_restrictions(action_records=[], reports_data=[])
+    assert r5.outcome_strip_label == "0 restricted"
+    assert r5.lead_action_text == ""
+    assert r5.milestone_statement == "Report restrictions were not recorded for this incident."
+

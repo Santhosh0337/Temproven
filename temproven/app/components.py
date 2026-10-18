@@ -39,6 +39,8 @@ from temproven.app.timeline import (
 from temproven.app.presenters import (
     build_lineage_dot,
     build_timeline_html,
+    describe_incident_report_restrictions,
+    describe_single_report_restriction,
     escape,
     format_interval,
     format_timestamp,
@@ -267,12 +269,11 @@ def render_section_1_overview(
         quarantined_ids = [a["target_id"] for a in recon.action_records if a.get("action_type") == "QUARANTINE_DATASET" and a.get("target_id")]
     q_str = f"{len(quarantined_ids)} quarantined ({', '.join(quarantined_ids)})" if quarantined_ids else "0 quarantined"
 
-    held_rpt_ids: list[str] = []
-    if impact_data and "reports" in impact_data:
-        held_rpt_ids = [r["id"] for r in impact_data["reports"] if r.get("current_status") in ("HELD", "REQUIRES_REVIEW")]
-    if not held_rpt_ids and recon.action_records:
-        held_rpt_ids = [a["target_id"] for a in recon.action_records if a.get("action_type") in ("HOLD_REPORT", "FLAG_REPORT_REVIEW") and a.get("target_id")]
-    r_str = f"{len(held_rpt_ids)} held ({', '.join(held_rpt_ids)})" if held_rpt_ids else "0 held"
+    r_restr = describe_incident_report_restrictions(
+        action_records=recon.action_records,
+        reports_data=impact_data.get("reports", []) if impact_data else None,
+    )
+    r_str = r_restr.outcome_strip_label
 
     escalated = [t for t in (recon.tasks or []) if t.get("status") == "ESCALATED"]
     if escalated:
@@ -298,7 +299,7 @@ def render_section_1_overview(
                 <div class="mono-text" style="color: #F95738; font-weight: 500;">{escape(q_str)}</div>
             </div>
             <div>
-                <div class="micro-label">PUBLICATION GATE HOLD</div>
+                <div class="micro-label">REPORT RESTRICTIONS</div>
                 <div class="mono-text" style="color: #F95738; font-weight: 500;">{escape(r_str)}</div>
             </div>
             <div>
@@ -554,6 +555,7 @@ def render_section_1_overview(
 def render_section_2_impact(
     instrument_id: str | None,
     impact_data: dict[str, Any],
+    action_records: list[dict[str, Any]] | None = None,
 ) -> None:
     """
     Panel 02: Downstream Impact Trace.
@@ -641,9 +643,15 @@ def render_section_2_impact(
             rpt_rows = []
             for r in reports:
                 path_str = " → ".join(r.get("dependency_path", []))
+                restr_detail = describe_single_report_restriction(
+                    report_id=r["id"],
+                    current_status=r.get("current_status"),
+                    action_records=action_records,
+                )
                 rpt_rows.append({
                     "Report ID": r["id"],
                     "Status": r["current_status"],
+                    "Restriction": restr_detail.wording,
                     "Reason": r["reason"],
                     "Lineage Path": path_str,
                 })

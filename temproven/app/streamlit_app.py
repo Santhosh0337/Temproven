@@ -180,7 +180,7 @@ def main() -> None:
     col_mid_left, col_mid_right = st.columns(2, gap="large")
 
     with col_mid_left:
-        render_section_2_impact(recon.instrument_id, impact_data)
+        render_section_2_impact(recon.instrument_id, impact_data, action_records=recon.action_records)
 
     with col_mid_right:
         render_section_3_memory(
