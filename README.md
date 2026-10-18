@@ -23,38 +23,24 @@ Built for **Graph Hacks 2026** (WeMakeDevs × FalkorDB).
 
 ---
 
-## Quick setup (local Docker)
+## Quick Setup
 
-> Full instructions in progress — this section will be completed in Phase 7.
+### Prerequisites
 
-```bash
-# 1. FalkorDB must be running
-docker run -p 6379:6379 -p 3000:3000 -it --rm falkordb/falkordb:latest
+- Python 3.13 or compatible
+- Docker Desktop
+- Git
 
-# 2. Clone and set up Python environment
-cd Temproven
-python -m venv .venv
-.venv\Scripts\activate          # Windows
-pip install -r requirements.txt
+### 1. Start FalkorDB
 
-# 3. Configure
-copy .env.example .env          # then edit if needed (defaults work for local Docker)
+Ensure Docker Desktop is running, then start FalkorDB:
 
-# 4. Seed the demo graph
-python -m temproven.seed.seed
-
-# 5. Run the CLI demo
-python -m temproven.demo --act all
-
-# 6. Launch the UI
-streamlit run temproven/app/streamlit_app.py
-
-# 7. Run tests
-pytest tests/
-```
-
----
-
+```powershell
+docker run -d --name falkordb `
+  -p 6379:6379 `
+  -p 3000:3000 `
+  -v falkordb_data:/data `
+  falkordb/falkordb:latest
 ## Streamlit UI Dashboard Architecture
 
 The Temproven UI (`temproven/app/streamlit_app.py`) provides an editorial, technical laboratory integrity dashboard structured across four core capability panels:
